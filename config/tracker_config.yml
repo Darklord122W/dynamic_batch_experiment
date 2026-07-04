@@ -1,0 +1,63 @@
+%YAML:1.0
+####################################################################################################
+# tracker_config.yml  —  low-level tracker settings for nvtracker (NvSORT)
+#
+# This is DeepStream 7.1's shipped NvSORT config
+# (/opt/nvidia/deepstream/deepstream/samples/configs/deepstream-app/config_tracker_NvSORT.yml),
+# copied here so the prototype is self-contained and tweakable.
+#
+# Why NvSORT (and not NvDCF / NvDeepSORT):
+#   NvSORT = Kalman-filter motion prediction + Hungarian/greedy IOU+size association.
+#   It gives persistent, frame-to-frame track IDs but uses NO visual re-ID features,
+#   so it is cheap to run — ideal for a multi-camera prototype. NvDCF/NvDeepSORT add a
+#   re-ID CNN (heavier). For an even lighter option see config_tracker_IOU.yml.
+#
+# All three (IOU / NvSORT / NvDCF) load the SAME low-level library:
+#   /opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so
+# The behaviour is selected purely by this YAML. The .so path and the tracker's
+# processing width/height are set as gst-element properties (see config/camera_params.yaml
+# -> tracker section and pipeline_builder.py), NOT here.
+####################################################################################################
+
+BaseConfig:
+  minDetectorConfidence: 0.1345   # Detector bboxes below this confidence are ignored for tracking
+
+TargetManagement:
+  enableBboxUnClipping: 0         # Unclip bboxes likely clipped by the image border
+  maxTargetsPerStream: 300        # Max targets tracked per camera (includes shadow-tracked)
+
+  # [Creation & Termination Policy]
+  minIouDiff4NewTarget: 0.5780    # New detection discarded if IOU with an existing target exceeds this
+  minTrackerConfidence: 0.8216    # Below this, target is tracked in "shadow" mode. Range [0,1]
+  probationAge: 5                 # Target becomes valid once its age exceeds this
+  maxShadowTrackingAge: 26        # Max shadow-tracking length before the track is terminated
+                                  #   (how long an ID survives an occlusion — raise for longer memory)
+  earlyTerminationAge: 1          # Terminate a TENTATIVE target early if shadow age hits this
+
+TrajectoryManagement:
+  useUniqueID: 0                  # 0 = per-stream 32-bit IDs (what this prototype reports as track_id)
+
+DataAssociator:
+  dataAssociatorType: 0           # DEFAULT
+  associationMatcherType: 1       # CASCADED
+  checkClassMatch: 1              # Only associate detections of the same class
+
+  # [Association Metric: thresholds for valid candidates]
+  minMatchingScore4Overall: 0.2543
+  minMatchingScore4SizeSimilarity: 0.4019
+  minMatchingScore4Iou: 0.2159
+  matchingScoreWeight4SizeSimilarity: 0.1365
+  matchingScoreWeight4Iou: 0.3836
+
+  # [Association Metric: tentative detections] — IOU-only for low-confidence detections
+  tentativeDetectorConfidence: 0.2331
+  minMatchingScore4TentativeIou: 0.2867
+  usePrediction4Assoc: 1          # Use predicted state for association instead of last-known state
+
+StateEstimator:
+  stateEstimatorType: 2           # REGULAR (Kalman filter)
+
+  # [Dynamics Modeling]
+  noiseWeightVar4Loc: 0.0301      # Process/measurement noise weight for bbox center
+  noiseWeightVar4Vel: 0.0017      # Process/measurement noise weight for velocity
+  useAspectRatio: 1               # Include aspect ratio in the Kalman observation

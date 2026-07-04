@@ -1,0 +1,117 @@
+# =============================================================================
+# camera_params.yaml  —  the single source of truth for the pipeline.
+#
+# The pipeline builds itself dynamically from the `cameras` list (1..4 entries),
+# so nothing about camera count or resolution is hardcoded in the .py files.
+#
+# ---- Logitech C920x capture cheat-sheet (verified on this hardware) ----------
+# The C920 exposes exactly two usable formats over USB-2:
+#     MJPG (image/jpeg)  : 30 fps at 640x480, 1280x720 AND 1920x1080
+#     YUYV (video/x-raw) : 30 fps only up to 640x480; 720p caps at 10 fps,
+#                          1080p at 5 fps (uncompressed USB-2 bandwidth limit)
+# => Use format: mjpeg for anything above VGA. Use format: raw only at <=640x480.
+#
+# ---- USB bandwidth (this rig: all 4 cams on ONE USB-2 bus) -------------------
+# uvcvideo reserves USB bandwidth from each camera's PEAK payload (not the true
+# compressed MJPEG rate), so a bus fills up fast. Measured on this exact device:
+#     4 cameras @ 640x480 MJPG 30fps  -> WORKS  (this is the default below)
+#     2 cameras @ 1280x720 MJPG 30fps -> works
+#     4 cameras @ 1280x720 MJPG 30fps -> 3rd camera FAILS ("Failed to allocate
+#                                        required memory" / STREAMON ENOSPC)
+# To run fewer cameras at higher resolution, cut the `cameras:` list to 1-2 and
+# raise width/height to 1280x720 (or 1920x1080). To run 4 cameras above 480p,
+# split them across separate USB host controllers (don't share one bus/hub).
+# =============================================================================
+
+# Global capture defaults; each camera inherits these unless it overrides them.
+capture:
+  format: mjpeg          # mjpeg (default, needed >VGA) | raw (YUY2, <=640x480 only)
+  width: 640
+  height: 480
+  fps: 30
+
+# Active cameras. Each entry is a device path, optionally with per-camera
+# overrides (format/width/height/fps/mjpeg_decoder). The list order defines the
+# camera_id / source_id reported with every detection.
+#
+# On this device the 4x C920 capture nodes are /dev/video0,2,4,6 (the odd nodes
+# are UVC metadata, not video). Comment out entries to run fewer cameras.
+cameras:
+  - device: /dev/video0
+  - device: /dev/video2
+  - device: /dev/video4
+  - device: /dev/video6
+
+# nvstreammux. width/height default to the capture size so bounding-box pixel
+# coordinates in the output are directly meaningful in the source image.
+# Keep these equal to capture width/height above.
+streammux:
+  width: 640
+  height: 480
+  live_source: 1                 # USB/live cameras
+  batched_push_timeout_us: 33333 # ~1/30s; don't stall the batch if a cam hiccups
+  nvbuf_memory_type: 0           # Jetson default (NVMM surface array)
+
+# nvinfer (PGIE). The heavy model settings live in pgie_config.txt.
+pgie:
+  config_file: config/pgie_config.txt
+
+# nvtracker. NvSORT = lightweight Kalman + association, persistent IDs, no re-ID.
+tracker:
+  ll_lib_file: /opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so
+  ll_config_file: config/tracker_config.yml
+  width: 640                     # tracker processing width  (multiple of 32)
+  height: 384                    # tracker processing height (multiple of 32)
+  gpu_id: 0
+
+# Output writer behaviour (console JSON by default).
+output:
+  only_nonempty: false           # true = skip frames with zero detections
+  pretty: false                  # true = multi-line JSON instead of one line
+  log_interval_s: 1.0            # human log (--log human): min seconds between lines per camera
+
+# Debug visualization (only used with --display / --debug / --record). All 4
+# cameras are tiled into one window; nvdsosd draws boxes + labels + track IDs.
+display:
+  width: 1280                    # tiled composite width  (all cameras together)
+  height: 720                    # tiled composite height
+  # window_width: 1280           # optional: on-screen window size (defaults to composite size)
+  # window_height: 720
+
+# ============================================================================
+# RT experiment sections (multicam_perception_rt only). CLI flags override these.
+# ============================================================================
+
+# Input source. 'v4l2' = live cameras (default). 'file' = deterministic replay of
+# recorded clips <replay_dir>/cam{i}.mp4 for reproducible benchmarks
+# (record them with: python3 scripts/record_replay_clips.py).
+source:
+  type: v4l2                     # v4l2 | file
+  replay_dir: experiments/clips
+
+# Dynamic batching timeout (the nvstreammux batched-push-timeout).
+#   fixed    = constant base_us (baseline for A/B).
+#   adaptive = scales with the number of ACTIVE cameras, so skipping cameras also
+#              shrinks the batch wait (see controllers.py / the RT-BEV analogy).
+timeout:
+  policy: fixed                  # fixed | adaptive
+  base_us: 33333                 # base wait (~1/30s)
+  min_us: 5000                   # adaptive clamp (min)
+  max_us: 100000                 # adaptive clamp (max)
+
+# Context-aware camera selection (drives the per-camera valves = skip gates).
+#   all       = every camera always active (baseline / original behaviour).
+#   activity  = skip cameras with no detections for idle_secs; re-probe periodically.
+#   scheduled = deterministic active-set timeline, e.g. (uncomment):
+#       type: scheduled
+#       schedule:
+#         - {at: 10, cameras: [0, 1]}
+#         - {at: 20, cameras: [0, 1, 2, 3]}
+context:
+  type: all                      # all | activity | scheduled
+  idle_secs: 3.0                 # (activity) no-detection time before skipping
+  reprobe_secs: 2.0              # (activity) re-enable interval to re-check
+
+# How often the timeout/gate controllers re-evaluate (milliseconds).
+control:
+  tick_ms: 500
