@@ -57,19 +57,27 @@ def analyze(path: str, warmup_s: float = 3.0, accuracy: Optional[float] = None) 
     dets = sum(int(r["total_dets"]) for r in rows)
 
     new_ids = int(rows[-1]["new_ids_cum"]) - int(rows[0]["new_ids_cum"])
-    # Stability proxy in (0, 1]: fewer new IDs per processed frame -> closer to 1.
+    # ROUGH stability proxy in (0, 1]: fewer brand-new track IDs per processed frame
+    # -> closer to 1. CAVEAT: it conflates tracking churn with legitimately-new
+    # objects entering the scene, and the x100 scale is arbitrary. It is a relative
+    # placeholder for accuracy, NOT a correctness measure — use --accuracy <mAP>
+    # with a labelled replay for real accuracy.
     stability = 1.0 / (1.0 + (new_ids / max(1, frames)) * 100.0)
     acc = accuracy if accuracy is not None else stability
 
+    frames_s = frames / dur
     e2e_mean = statistics.mean(e2e) if e2e else float("nan")
-    fes = (frames * acc) / e2e_mean if e2e and e2e_mean > 0 else float("nan")
+    # FES (RT-BEV Eq. 4) adapted: use frames/SECOND (not the absolute frame count)
+    # so runs of different (warmup-trimmed) duration are comparable. Higher is
+    # better (more throughput per ms of latency, weighted by accuracy).
+    fes = (frames_s * acc) / e2e_mean if e2e and e2e_mean > 0 else float("nan")
 
     return {
         "run": os.path.basename(path),
         "batches": len(rows),
         "dur_s": dur,
         "batches_s": len(rows) / dur,
-        "frames_s": frames / dur,
+        "frames_s": frames_s,
         "fullness": statistics.mean(n_in),
         "compute_mean": statistics.mean(compute) if compute else float("nan"),
         "compute_p99": _pct(compute, 99),
@@ -106,7 +114,7 @@ def print_table(results: List[Dict]) -> None:
         ("new track ids", "{new_ids}"),
         ("stability proxy", "{stability:.3f}"),
         ("accuracy used", "{accuracy:.3f}"),
-        ("FES (frames*acc/e2e)", "{fes:.2f}"),
+        ("FES (fps*acc/e2e)", "{fes:.4f}"),
     ]
     label_w = max(len(lbl) for lbl, _ in rows) + 2
     col_w = max(12, max(len(r["run"]) for r in results) + 2)

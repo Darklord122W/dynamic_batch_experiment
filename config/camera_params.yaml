@@ -51,6 +51,15 @@ streammux:
   live_source: 1                 # USB/live cameras
   batched_push_timeout_us: 33333 # ~1/30s; don't stall the batch if a cam hiccups
   nvbuf_memory_type: 0           # Jetson default (NVMM surface array)
+  # Input time-synchronization across cameras (nvstreammux sync-inputs). Default
+  # OFF: this pipeline detects each camera independently (no fusion), so aligning
+  # frames by timestamp only adds latency/drops for no gain. Enable (1) only if you
+  # add a fusion/stitching stage or want to A/B its latency cost. Note: USB webcams
+  # have no hardware trigger, so this aligns by ARRIVAL time, not true exposure.
+  sync_inputs: 0                 # 0 = off (recommended) | 1 = time-align inputs
+  max_latency_ns: 33333333       # ~33ms (1 frame @30fps): extra wait to align a
+                                 #   late frame. ONLY applied when sync_inputs=1;
+                                 #   raise for jittery sources, lower for less latency.
 
 # nvinfer (PGIE). The heavy model settings live in pgie_config.txt.
 pgie:

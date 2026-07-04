@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import csv
 import time
-from collections import deque
 from typing import Optional, Set
 
 import gi
@@ -49,8 +48,10 @@ class MetricsCollector:
         self._timeout_us: int = 0
         self._mux_batch: int = num_cams
 
-        # FIFO of mux-src timestamps, matched to tracker-src buffers in order.
-        self._mux_ts: deque = deque()
+        # {batch PTS -> mux-src monotonic time}. Keyed by PTS (not a FIFO) so a
+        # dropped buffer between mux and tracker can't permanently desync the
+        # compute-latency pairing (the FIFO version was one-off-forever fragile).
+        self._mux_pts = {}
         # Per-camera map {frame PTS -> source arrival time}. Correlating by PTS
         # (not FIFO) survives nvstreammux dropping frames in live mode. Lets us
         # measure the TRUE latency a frame experiences (batch-wait + compute),
@@ -112,8 +113,11 @@ class MetricsCollector:
         return _probe
 
     def _mux_probe(self, pad, info, _u) -> Gst.PadProbeReturn:
-        if info.get_buffer() is not None:
-            self._mux_ts.append(time.monotonic())
+        buf = info.get_buffer()
+        if buf is not None and buf.pts != Gst.CLOCK_TIME_NONE:
+            self._mux_pts[buf.pts] = time.monotonic()
+            if len(self._mux_pts) > self._src_pts_cap:  # bound memory: drop oldest
+                del self._mux_pts[next(iter(self._mux_pts))]
         return Gst.PadProbeReturn.OK
 
     def _tracker_probe(self, pad, info, _u) -> Gst.PadProbeReturn:
@@ -123,7 +127,8 @@ class MetricsCollector:
         now = time.monotonic()
 
         # compute latency (mux src -> tracker src): inference + tracking only.
-        t_mux = self._mux_ts.popleft() if self._mux_ts else None
+        # Matched by batch PTS -> robust to any dropped buffer between the two pads.
+        t_mux = self._mux_pts.pop(buf.pts, None) if buf.pts != Gst.CLOCK_TIME_NONE else None
         compute_ms = (now - t_mux) * 1e3 if t_mux is not None else -1.0
 
         # detections per camera + true source->output latency + tracking proxy.

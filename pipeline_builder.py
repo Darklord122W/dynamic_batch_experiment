@@ -246,6 +246,17 @@ def _build_streammux(cfg: Dict, num_cams: int) -> Gst.Element:
     )
     # Jetson: 0 = default NVMM surface array allocator.
     mux.set_property("nvbuf-memory-type", int(mux_cfg.get("nvbuf_memory_type", 0)))
+
+    # Input time-synchronization (RT-BEV-style). OFF by default: our per-camera
+    # detection never fuses cameras, so aligning frames by timestamp only adds
+    # latency (and drops) for no accuracy gain. Turn on to experiment, or if you
+    # add a fusion/stitching stage. max-latency (ns) is the extra time the muxer
+    # waits to align a late frame; it is applied ONLY when sync is on, so the
+    # default (sync off) path keeps its low latency with no change.
+    sync_inputs = int(mux_cfg.get("sync_inputs", 0))
+    mux.set_property("sync-inputs", sync_inputs)
+    if sync_inputs:
+        mux.set_property("max-latency", int(mux_cfg.get("max_latency_ns", 33333333)))
     return mux
 
 
