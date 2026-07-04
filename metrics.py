@@ -67,8 +67,8 @@ class MetricsCollector:
         self._file = open(csv_path, "w", newline="")
         self._writer = csv.writer(self._file)
         self._writer.writerow(
-            ["batch_idx", "t_mono", "n_in_batch", "n_active", "timeout_us", "mux_batch",
-             "compute_ms", "e2e_ms", "total_dets", "new_ids_cum"]
+            ["batch_idx", "t_mono", "n_in_batch", "n_real", "n_active", "active_mask",
+             "timeout_us", "mux_batch", "compute_ms", "e2e_ms", "total_dets", "new_ids_cum"]
             + [f"dets_cam{i}" for i in range(num_cams)]
         )
         self._t_start = time.monotonic()
@@ -136,18 +136,24 @@ class MetricsCollector:
         per_cam = [0] * self.num_cams
         total = 0
         max_e2e = -1.0
+        n_real = 0  # frames that genuinely arrived from a live camera this cycle
         if batch_meta is not None:
             for frame in parse_batch_meta(batch_meta):
                 cid = frame.camera_id
+                total += len(frame.detections)
                 if 0 <= cid < self.num_cams:
                     per_cam[cid] = len(frame.detections)
-                    # true latency: this frame's source arrival -> now (wait + compute)
+                    # A frame is REAL iff its PTS matches a source arrival stamp.
+                    # The legacy mux pads a skipped batch with REPEATED frames whose
+                    # PTS was already consumed -> they won't match -> excluded. This
+                    # gives an honest frame count (num_frames_in_batch overcounts the
+                    # phantom repeats), and the frame's true source->output latency.
                     arrival = self._src_pts[cid].pop(frame.buf_pts, None)
                     if arrival is not None:
+                        n_real += 1
                         lat_ms = (now - arrival) * 1e3
                         if lat_ms > max_e2e:
                             max_e2e = lat_ms
-                total += len(frame.detections)
                 for det in frame.detections:
                     if det.track_id >= 0:
                         key = (cid, det.track_id)
@@ -157,14 +163,16 @@ class MetricsCollector:
         # a batch is only as fresh as its OLDEST frame -> worst-case in-batch e2e
         e2e_ms = max_e2e
 
-        # How many camera frames were actually in this batch — the direct measure
-        # of the timeout / skip effect (4 = full; fewer = timed out or skipped).
+        # n_in_batch = what the mux REPORTS (may include phantom repeats when
+        # skipping); n_real = frames that actually arrived from a camera.
         n_in_batch = batch_meta.num_frames_in_batch if batch_meta is not None else 0
 
+        # per-camera active bitmask, e.g. "1100" = cameras 0,1 active (2,3 skipped)
+        active_mask = "".join("1" if i in self._active else "0" for i in range(self.num_cams))
         self._writer.writerow(
-            [self._batch_idx, f"{now - self._t_start:.4f}", n_in_batch, len(self._active),
-             self._timeout_us, self._mux_batch, f"{compute_ms:.3f}", f"{e2e_ms:.3f}",
-             total, self._new_ids_cum]
+            [self._batch_idx, f"{now - self._t_start:.4f}", n_in_batch, n_real,
+             len(self._active), active_mask, self._timeout_us, self._mux_batch,
+             f"{compute_ms:.3f}", f"{e2e_ms:.3f}", total, self._new_ids_cum]
             + per_cam
         )
         self._batch_idx += 1

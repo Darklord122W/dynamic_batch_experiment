@@ -112,10 +112,58 @@ effect), and **FES** (`processed_frames × accuracy / avg_latency`, RT-BEV Eq. 4
 Always drop a warmup window (`--warmup 4`): the first ~1–2 s per run includes
 engine deserialization and pipeline fill, which otherwise dominates p99/max.
 
+## Campaign verdict (measured: 3 repeats × 25s, sequential, replay)
+
+Run `python3 scripts/big_experiment.py` (baseline vs each addition, one factor at a
+time). Honest results after fixing the throughput metric (see below):
+
+| variant | e2e mean | e2e p99 | compute | REAL throughput | verdict |
+|---|---|---|---|---|---|
+| baseline | 133 ms | 143 | 100 ms | 120 fps | — |
+| adaptiveT_all | 133 | 134 | 99 | 120 | **no change** (adaptive timeout is inert when all cams active) |
+| sync_inputs | 133 | 152 | 99 | 120 | **no benefit** (neutral on replay; harmful on live) |
+| skip_fixedT | 65 | 69 | 34 | **60** | scheduled skip 2 cams → −66% compute, **−50% throughput** |
+| skip_adaptiveT | 97 | 109 | 81 | 60 | skip + adaptive timeout (wait 30→15 ms) — Pareto-DOMINATED by skip_fixedT |
+| skip_adaptTB | 99 | 100 | 83 | 60 | batch-size adaptation adds **nothing** |
+| **activity_skip** | 71 | **122** | 41 | 59 | **adaptive** skip: self-tunes to scene (−59% compute), but worse tail (reprobe spikes) |
+
+**Bottom line:** nothing gives a free lunch — see `tradeoff.png`: every "skip"
+variant sits **bottom-LEFT** of baseline (less cost AND less throughput); nothing is
+bottom-RIGHT (more throughput at less cost). The only real win is **skipping cameras
+cuts GPU compute** (power/thermal) at a **−50% real-throughput cost**.
+- **Best skip = fixed timeout** (`skip_fixedT` / `activity_skip`): lowest compute *and*
+  latency. The adaptive-timeout skip variants are **Pareto-dominated** (same
+  throughput, higher compute+latency) — so the adaptive timeout HURT here (it cuts
+  the `wait` but raises compute; net worse).
+- **Adaptive (activity) skip** self-tunes: on these clips it runs ~2 cameras
+  (`activity_cameras.png` shows cam2 100% active, the empty cameras skipped with 2 s
+  reprobes). Similar mean savings to the scheduled skip, but a **worse p99 tail** —
+  the reprobe blips briefly re-enable cameras and spike latency. That's the
+  compute-vs-coverage/reaction trade.
+- **sync-inputs / batch-size / adaptive-timeout-alone: no net improvement.**
+- Replay inflates absolutes ~3× vs live — treat these as *relative*.
+
+Graphs in `results/big/`: `summary_bars.png` (per-metric bars), `tradeoff.png`
+(the Pareto view — the clearest "is it better?"), `timelines.png` (over time),
+`activity_cameras.png` (which cameras the adaptive skip keeps on).
+
+### Metric reliability lesson (important)
+
+`num_frames_in_batch` (and any throughput built from it) is **NOT reliable when
+skipping** on the legacy mux: it repeats a skipped camera's stale frame to keep the
+batch "full", so it reports 4 even with 2 cameras active (those phantom frames
+produce no detections). Use **`n_active`** (the gate's commanded active count —
+verified: the valves obey it) for real throughput. `analyze.py` does this; the
+summary table shows both `real/bt` and `rep/bt` so the phantom padding is visible.
+The trustworthy metrics are **`compute_ms`** (GPU work) and **`e2e`/`wait`**
+(latency); frame-count throughput needs `n_active`.
+
 ## Files
 ```
 experiments/
-├── exp_scheduled.yaml   # example config: scheduled camera-skip + (CLI) adaptive timeout
+├── exp_scheduled.yaml   # example: scheduled camera-skip + (CLI) adaptive timeout
+├── exp_skip_big.yaml    # skip-and-stay config used by big_experiment.py
+├── exp_sync_big.yaml    # sync-inputs config used by big_experiment.py
 ├── clips/               # recorded per-camera replay clips (cam0..3.mp4)
-└── results/             # benchmark CSV outputs land here
+└── results/big/         # campaign CSVs, summary.txt, summary_bars.png, timelines.png
 ```

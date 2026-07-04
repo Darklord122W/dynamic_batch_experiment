@@ -53,34 +53,50 @@ def analyze(path: str, warmup_s: float = 3.0, accuracy: Optional[float] = None) 
     compute = [float(r["compute_ms"]) for r in rows if float(r["compute_ms"]) >= 0]
     e2e = [float(r["e2e_ms"]) for r in rows if float(r["e2e_ms"]) >= 0]
     n_in = [int(r["n_in_batch"]) for r in rows]
+    # REAL frames processed = the gate's ACTIVE-camera count. This is the reliable
+    # measure: it is what the controller commanded and the valves were verified to
+    # obey (a dropped camera pushes no frames). num_frames_in_batch is NOT reliable
+    # here — the legacy mux repeats a skipped camera's stale frame to keep the batch
+    # "full", so it overcounts (those phantom frames produce no detections).
+    n_act = [int(r["n_active"]) for r in rows]
+    real_frames = sum(n_act)
     frames = sum(n_in)
     dets = sum(int(r["total_dets"]) for r in rows)
 
+    # Per-batch wait = e2e - compute (both from the same batch) -> the batch-wait.
+    # Low-noise: the compute noise is in both terms and cancels. This is the metric
+    # the timeout directly controls.
+    wait = [float(r["e2e_ms"]) - float(r["compute_ms"]) for r in rows
+            if float(r["e2e_ms"]) >= 0 and float(r["compute_ms"]) >= 0]
+
     new_ids = int(rows[-1]["new_ids_cum"]) - int(rows[0]["new_ids_cum"])
-    # ROUGH stability proxy in (0, 1]: fewer brand-new track IDs per processed frame
-    # -> closer to 1. CAVEAT: it conflates tracking churn with legitimately-new
-    # objects entering the scene, and the x100 scale is arbitrary. It is a relative
+    # ROUGH stability proxy in (0, 1]: fewer brand-new track IDs per REAL frame ->
+    # closer to 1. CAVEAT: it conflates tracking churn with legitimately-new objects
+    # entering the scene, and the x100 scale is arbitrary. It is a relative
     # placeholder for accuracy, NOT a correctness measure — use --accuracy <mAP>
     # with a labelled replay for real accuracy.
-    stability = 1.0 / (1.0 + (new_ids / max(1, frames)) * 100.0)
+    stability = 1.0 / (1.0 + (new_ids / max(1, real_frames)) * 100.0)
     acc = accuracy if accuracy is not None else stability
 
-    frames_s = frames / dur
+    real_frames_s = real_frames / dur
     e2e_mean = statistics.mean(e2e) if e2e else float("nan")
-    # FES (RT-BEV Eq. 4) adapted: use frames/SECOND (not the absolute frame count)
-    # so runs of different (warmup-trimmed) duration are comparable. Higher is
-    # better (more throughput per ms of latency, weighted by accuracy).
-    fes = (frames_s * acc) / e2e_mean if e2e and e2e_mean > 0 else float("nan")
+    # FES (RT-BEV Eq. 4) adapted: REAL frames/SECOND so runs of different duration
+    # are comparable and phantom frames don't inflate it.
+    fes = (real_frames_s * acc) / e2e_mean if e2e and e2e_mean > 0 else float("nan")
 
     return {
         "run": os.path.basename(path),
         "batches": len(rows),
         "dur_s": dur,
         "batches_s": len(rows) / dur,
-        "frames_s": frames_s,
-        "fullness": statistics.mean(n_in),
+        "frames_s": real_frames_s,                 # REAL throughput (active cams x rate)
+        "reported_frames_s": frames / dur,          # what num_frames_in_batch claims
+        "fullness": statistics.mean(n_act),         # REAL active cameras per batch
+        "reported_fullness": statistics.mean(n_in),
         "compute_mean": statistics.mean(compute) if compute else float("nan"),
         "compute_p99": _pct(compute, 99),
+        "wait_mean": statistics.mean(wait) if wait else float("nan"),
+        "wait_p99": _pct(wait, 99),
         "e2e_mean": e2e_mean,
         "e2e_p50": _pct(e2e, 50),
         "e2e_p99": _pct(e2e, 99),
@@ -101,19 +117,18 @@ def print_table(results: List[Dict]) -> None:
     rows = [
         ("batches", "{batches}"),
         ("duration (s)", "{dur_s:.1f}"),
-        ("batches/s", "{batches_s:.1f}"),
-        ("frames/s", "{frames_s:.1f}"),
-        ("avg batch fullness", "{fullness:.2f}"),
+        ("REAL frames/s", "{frames_s:.1f}"),
+        ("reported frames/s", "{reported_frames_s:.1f}"),
+        ("REAL frames/batch", "{fullness:.2f}"),
+        ("reported frames/batch", "{reported_fullness:.2f}"),
         ("compute mean (ms)", "{compute_mean:.2f}"),
-        ("compute p99 (ms)", "{compute_p99:.2f}"),
+        ("wait mean (ms)", "{wait_mean:.2f}"),
         ("e2e mean (ms)", "{e2e_mean:.2f}"),
         ("e2e p50 (ms)", "{e2e_p50:.2f}"),
         ("e2e p99 (ms)", "{e2e_p99:.2f}"),
         ("e2e max (ms)", "{e2e_max:.2f}"),
         ("total detections", "{dets}"),
-        ("new track ids", "{new_ids}"),
         ("stability proxy", "{stability:.3f}"),
-        ("accuracy used", "{accuracy:.3f}"),
         ("FES (fps*acc/e2e)", "{fes:.4f}"),
     ]
     label_w = max(len(lbl) for lbl, _ in rows) + 2
