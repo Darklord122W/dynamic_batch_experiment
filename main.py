@@ -31,7 +31,7 @@ from gi.repository import GLib, Gst  # noqa: E402
 import pyds  # noqa: E402
 
 from context import make_context  # noqa: E402
-from controllers import CameraGateController, TimeoutController  # noqa: E402
+from controllers import BatchController, CameraGateController, TimeoutController  # noqa: E402
 from detection_parser import parse_batch_meta  # noqa: E402
 from fps_overlay import FpsMeter, attach_fps_overlay  # noqa: E402
 from metrics import MetricsCollector  # noqa: E402
@@ -139,6 +139,8 @@ def load_config(path: str, overrides: Dict = None) -> Dict:
     }
     cfg["context"] = cfg.get("context") or {"type": "all"}
     cfg["context"].setdefault("type", "all")
+    b = cfg.get("batch") or {}
+    cfg["batch"] = {"policy": str(b.get("policy", "fixed")).lower()}
     ctrl = cfg.get("control") or {}
     cfg["control"] = {"tick_ms": int(ctrl.get("tick_ms", 500))}
     return cfg
@@ -156,6 +158,8 @@ def _apply_overrides(cfg: Dict, ov: Dict) -> None:
         cfg.setdefault("timeout", {})["base_us"] = ov["timeout_us"]
     if ov.get("context_type"):
         cfg.setdefault("context", {})["type"] = ov["context_type"]
+    if ov.get("batch_policy"):
+        cfg.setdefault("batch", {})["policy"] = ov["batch_policy"]
     if ov.get("control_ms") is not None:
         cfg.setdefault("control", {})["tick_ms"] = ov["control_ms"]
 
@@ -304,7 +308,8 @@ def run(
         f"[main] {n} camera(s) [{cfg['source']['type']}] "
         f"{cfg['capture']['width']}x{cfg['capture']['height']}@{cfg['capture']['fps']} "
         f"({cfg['capture']['format']}); timeout={cfg['timeout']['policy']}"
-        f"({cfg['timeout']['base_us']}us) context={cfg['context']['type']} log={log_mode}"
+        f"({cfg['timeout']['base_us']}us) batch={cfg['batch']['policy']} "
+        f"context={cfg['context']['type']} log={log_mode}"
         + (f"; {', '.join(extras)}" if extras else "")
         + ".",
         file=sys.stderr,
@@ -341,6 +346,9 @@ def run(
     # Runtime controllers: camera gate (skip) + dynamic batched-push-timeout,
     # re-evaluated every control tick.
     gate = CameraGateController(pipeline, n, context, metrics)
+    batch_ctl = BatchController(
+        mux, policy=cfg["batch"]["policy"], gate=gate, num_cams=n, metrics=metrics,
+    )
     timeout_ctl = TimeoutController(
         mux,
         policy=cfg["timeout"]["policy"],
@@ -353,8 +361,9 @@ def run(
     )
 
     def _control_tick() -> bool:
-        gate.tick()          # apply active-camera set to the valves
-        timeout_ctl.tick()   # adapt the batch timeout to the active count
+        gate.tick()          # 1. apply active-camera set to the valves
+        batch_ctl.tick()     # 2. size the batch to the active count (push without waiting)
+        timeout_ctl.tick()   # 3. adapt the timeout (a backstop once batch-size is adaptive)
         return True          # keep firing
 
     control_id = GLib.timeout_add(int(cfg["control"]["tick_ms"]), _control_tick)
@@ -457,6 +466,11 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
         help="Context-aware camera selection: all (baseline), activity, scheduled.",
     )
     parser.add_argument(
+        "--batch-policy", choices=["fixed", "adaptive"], default=None,
+        help="nvstreammux batch-size: fixed (=camera count) or adaptive (=active count, "
+             "so a skipped-camera batch pushes immediately with no timeout wait).",
+    )
+    parser.add_argument(
         "--control-ms", type=int, default=None,
         help="How often (ms) the timeout/gate controllers re-evaluate (default 500).",
     )
@@ -485,6 +499,7 @@ def main() -> int:
         "timeout_policy": args.timeout_policy,
         "timeout_us": args.timeout_us,
         "context_type": args.context,
+        "batch_policy": args.batch_policy,
         "control_ms": args.control_ms,
     }
 

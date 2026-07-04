@@ -80,14 +80,26 @@ Compares **baseline** (fixed timeout, all active) vs **skip_fixed** (skip camera
 fixed timeout) vs **skip_adaptive** (skip + adaptive timeout), using the scheduled
 active-set in `exp_scheduled.yaml`.
 
-**Key finding (measured live):** skipping 2 of 4 cameras cuts `compute_ms`
-(~31→22 ms) *but* the batch can never fill (batch-size is still 4, only 2 arrive),
-so the muxer pays the full timeout every batch — the **wait grows** (~3→17 ms) and
-net e2e can get *worse*. Shrinking the timeout (`adaptive`) recovers some of it.
-The real fix is to also drop `batch-size`/`nvinfer batch-size` to the active count
-so a short batch counts as "full" and pushes immediately — a documented next step
-(runtime `batch-size` mutability on nvstreammux/nvinfer is the open question).
-**This is exactly why you measure before optimizing.**
+**Key finding (measured):** skipping 2 of 4 cameras cuts `compute_ms` (~31→22 ms)
+*but* the batch can never fill (batch-size 4, only 2 arrive), so the muxer pays the
+full timeout every batch — the **wait grows** and net e2e can get *worse*. Skipping
+is a **compute/power win, not a latency win** on the legacy mux. Shrinking the
+timeout (`--timeout-policy adaptive`) is the lever that recovers latency.
+
+**Batch-size adaptation — tested, does NOT help (negative result).** The obvious
+next idea was to also shrink `nvstreammux batch-size` to the active count so a
+short batch pushes immediately. Built as `--batch-policy adaptive` and measured:
+it doesn't work, and is slightly worse. Isolated `videotestsrc` test, wait
+(source→mux-push) when 2 of 4 are skipped: **~54 ms at batch-size 4, ~90 ms at
+batch-size 2.** Reason: the **legacy nvstreammux pushes on "all connected sink
+pads delivered OR timeout", not on batch-size** — so a smaller batch-size never
+triggers an early push. `nvinfer` batch-size is irrelevant here (it's the engine
+max; the dynamic engine runs any smaller batch natively, and it's NULL/READY-only
+anyway). A genuine early-push-on-skip would need the **new nvstreammux**
+(`USE_NEW_NVSTREAMMUX=yes`, deadline-based) or **dynamically releasing the skipped
+cameras' request pads** — both larger changes, not yet done.
+**This is exactly why you measure before optimizing** — the intuitive fix was a
+regression.
 
 ## Interpreting the table (`analyze.py`)
 

@@ -86,7 +86,7 @@ display:
 # recorded clips <replay_dir>/cam{i}.mp4 for reproducible benchmarks
 # (record them with: python3 scripts/record_replay_clips.py).
 source:
-  type: v4l2                     # v4l2 | file
+  type: file                     # v4l2 | file
   replay_dir: experiments/clips
 
 # Dynamic batching timeout (the nvstreammux batched-push-timeout).
@@ -99,19 +99,6 @@ timeout:
   min_us: 5000                   # adaptive clamp (min)
   max_us: 100000                 # adaptive clamp (max)
 
-# nvstreammux batch-size adaptation (EXPERIMENT — measured NOT to help; see below).
-#   fixed    = batch-size stays at the camera count (recommended).
-#   adaptive = batch-size = active-camera count.
-# The idea was that a short batch would count as "full" and push without waiting
-# the timeout. Measured result on the LEGACY mux: it does NOT work — the legacy
-# mux pushes on "all pads delivered OR timeout", not on batch-size, so this
-# doesn't trigger an early push (and was slightly worse). Skipping is a
-# compute/power win but adds batch-wait; the adaptive TIMEOUT is what shrinks that
-# wait. A real early-push-on-skip needs the new nvstreammux or pad removal.
-# Leave this 'fixed' unless re-measuring on the new mux. See experiments/README.md.
-batch:
-  policy: fixed                  # fixed | adaptive (adaptive = experiment only)
-
 # Context-aware camera selection (drives the per-camera valves = skip gates).
 #   all       = every camera always active (baseline / original behaviour).
 #   activity  = skip cameras with no detections for idle_secs; re-probe periodically.
@@ -121,9 +108,9 @@ batch:
 #         - {at: 10, cameras: [0, 1]}
 #         - {at: 20, cameras: [0, 1, 2, 3]}
 context:
-  type: all                      # all | activity | scheduled
-  idle_secs: 3.0                 # (activity) no-detection time before skipping
-  reprobe_secs: 2.0              # (activity) re-enable interval to re-check
+  type: scheduled
+  schedule:
+    - {at: 2, cameras: [0, 1]}
 
 # How often the timeout/gate controllers re-evaluate (milliseconds).
 control:

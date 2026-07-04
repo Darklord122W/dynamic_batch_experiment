@@ -47,6 +47,7 @@ class MetricsCollector:
         # State updated by the controllers each tick.
         self._active: Set[int] = set(range(num_cams))
         self._timeout_us: int = 0
+        self._mux_batch: int = num_cams
 
         # FIFO of mux-src timestamps, matched to tracker-src buffers in order.
         self._mux_ts: deque = deque()
@@ -65,7 +66,7 @@ class MetricsCollector:
         self._file = open(csv_path, "w", newline="")
         self._writer = csv.writer(self._file)
         self._writer.writerow(
-            ["batch_idx", "t_mono", "n_in_batch", "n_active", "timeout_us",
+            ["batch_idx", "t_mono", "n_in_batch", "n_active", "timeout_us", "mux_batch",
              "compute_ms", "e2e_ms", "total_dets", "new_ids_cum"]
             + [f"dets_cam{i}" for i in range(num_cams)]
         )
@@ -77,6 +78,9 @@ class MetricsCollector:
 
     def set_timeout_us(self, us: int) -> None:
         self._timeout_us = int(us)
+
+    def set_mux_batch(self, bs: int) -> None:
+        self._mux_batch = int(bs)
 
     # ---- probe wiring ---------------------------------------------------- #
     def attach(self, pipeline: Gst.Pipeline) -> None:
@@ -154,7 +158,8 @@ class MetricsCollector:
 
         self._writer.writerow(
             [self._batch_idx, f"{now - self._t_start:.4f}", n_in_batch, len(self._active),
-             self._timeout_us, f"{compute_ms:.3f}", f"{e2e_ms:.3f}", total, self._new_ids_cum]
+             self._timeout_us, self._mux_batch, f"{compute_ms:.3f}", f"{e2e_ms:.3f}",
+             total, self._new_ids_cum]
             + per_cam
         )
         self._batch_idx += 1

@@ -126,3 +126,80 @@ class TimeoutController:
     @property
     def current_us(self) -> int:
         return self._current
+
+
+class BatchController:
+    """Adapts nvstreammux ``batch-size`` to the active-camera count each tick.
+
+    MOTIVATION (the idea): when a camera is skipped the batch never reaches the
+    full ``batch-size``, so the muxer waits the whole timeout on every batch. The
+    hope was that ``batch-size == n_active`` would make a short batch count as
+    "full" and push immediately, removing the wait.
+
+    EMPIRICAL RESULT (measured on this device — see experiments/README.md): with
+    the LEGACY nvstreammux this does NOT work, and is slightly counterproductive.
+    The legacy mux pushes when *all connected sink pads have delivered OR the
+    timeout fires* — not when ``batch-size`` frames are present — so shrinking
+    batch-size does not trigger an early push (isolated test: skip-2 wait was
+    ~54 ms at batch-size 4 and ~90 ms at batch-size 2). Skipping a camera is
+    therefore a COMPUTE/POWER win (fewer frames inferred) but adds batch-wait
+    latency, and the working lever to shrink that wait is the adaptive TIMEOUT,
+    not batch-size. A true early-push on skip needs the NEW nvstreammux
+    (USE_NEW_NVSTREAMMUX=yes, deadline-based) or dynamically releasing the skipped
+    cameras' request pads. This controller is kept as a documented experiment;
+    leave ``policy: fixed`` unless you are re-measuring on the new mux.
+
+    Only nvstreammux is touched. nvinfer's ``batch-size`` is its build-time engine
+    max (== camera count) and is NULL/READY-only, but it needs no change: the
+    dynamic engine (max batch N) runs any smaller batch natively.
+
+    Policies:
+      * ``fixed``    — batch-size stays at the camera count (recommended default).
+      * ``adaptive`` — batch-size = active-camera count (experiment only; see above).
+
+    Args:
+        mux: the nvstreammux element.
+        policy: "fixed" | "adaptive".
+        gate: the CameraGateController (adaptive reads its active count).
+        num_cams: total cameras (the fixed/max batch size).
+        metrics: optional MetricsCollector to record the current batch size.
+    """
+
+    def __init__(
+        self,
+        mux: Gst.Element,
+        policy: str = "fixed",
+        gate: Optional[CameraGateController] = None,
+        num_cams: int = 4,
+        metrics=None,
+    ) -> None:
+        self._mux = mux
+        self._policy = policy
+        self._gate = gate
+        self._num = max(1, int(num_cams))
+        self._metrics = metrics
+        self._current = self._num
+        mux.set_property("batch-size", self._current)
+        if metrics is not None:
+            metrics.set_mux_batch(self._current)
+
+    def tick(self) -> int:
+        """Recompute and, if changed, apply the mux batch-size."""
+        if self._policy == "fixed":
+            new = self._num
+        elif self._policy == "adaptive":
+            n_active = len(self._gate.active) if self._gate is not None else self._num
+            new = max(1, min(self._num, n_active))
+        else:
+            raise ValueError(f"unknown batch policy '{self._policy}' (use fixed | adaptive)")
+
+        if new != self._current:
+            self._mux.set_property("batch-size", new)
+            self._current = new
+        if self._metrics is not None:
+            self._metrics.set_mux_batch(self._current)
+        return self._current
+
+    @property
+    def current(self) -> int:
+        return self._current
