@@ -22,6 +22,7 @@ No ground truth is available for live webcams, so "accuracy" here is a *proxy*
 from __future__ import annotations
 
 import csv
+import os
 import time
 from typing import Optional, Set
 
@@ -72,6 +73,15 @@ class MetricsCollector:
             + [f"dets_cam{i}" for i in range(num_cams)]
         )
         self._t_start = time.monotonic()
+
+        # Opt-in diagnostic (default OFF; no effect unless DIAG_SOURCES is set):
+        # per batch, dump which camera source_ids landed together and their PTS
+        # skew (ms). Used to explain why sync-inputs caps n_in_batch below num_cams.
+        self._diag = None
+        diag_path = os.environ.get("DIAG_SOURCES")
+        if diag_path:
+            self._diag = open(diag_path, "w", newline="")
+            self._diag.write("batch_idx,t_mono,n,source_ids,pts_skew_ms\n")
 
     # ---- called by the controllers each control tick --------------------- #
     def set_active_cameras(self, active: Set[int]) -> None:
@@ -137,9 +147,12 @@ class MetricsCollector:
         total = 0
         max_e2e = -1.0
         n_real = 0  # frames that genuinely arrived from a live camera this cycle
+        diag_srcs = []  # (source_id, buf_pts) present this batch — for DIAG_SOURCES
         if batch_meta is not None:
             for frame in parse_batch_meta(batch_meta):
                 cid = frame.camera_id
+                if self._diag is not None:
+                    diag_srcs.append((cid, frame.buf_pts))
                 total += len(frame.detections)
                 if 0 <= cid < self.num_cams:
                     per_cam[cid] = len(frame.detections)
@@ -175,6 +188,12 @@ class MetricsCollector:
              f"{compute_ms:.3f}", f"{e2e_ms:.3f}", total, self._new_ids_cum]
             + per_cam
         )
+        if self._diag is not None and diag_srcs:
+            ids = sorted(s for s, _ in diag_srcs)
+            pts = [p for _, p in diag_srcs if p]
+            skew_ms = (max(pts) - min(pts)) / 1e6 if len(pts) > 1 else 0.0
+            self._diag.write(f"{self._batch_idx},{now - self._t_start:.4f},"
+                             f"{len(ids)},{'|'.join(map(str, ids))},{skew_ms:.2f}\n")
         self._batch_idx += 1
         return Gst.PadProbeReturn.OK
 
@@ -183,6 +202,9 @@ class MetricsCollector:
         try:
             self._file.flush()
             self._file.close()
+            if self._diag is not None:
+                self._diag.flush()
+                self._diag.close()
         except Exception:
             pass
         dur = max(1e-6, time.monotonic() - self._t_start)

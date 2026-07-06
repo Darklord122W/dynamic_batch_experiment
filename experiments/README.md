@@ -65,11 +65,16 @@ Sweeps fixed `batched-push-timeout` ∈ {10, 20, 33, 50} ms with all cameras act
 the value barely moves e2e — a fixed 33 ms is fine when cameras are synced and all
 active. The timeout only bites when batches *don't* fill (skipping / desync).
 
-### E2 — engine shape (dynamic vs static batch) — *scaffold*
-Not automated (needs a re-export). Build a static-batch-4 engine and compare
-`compute_ms` mean/p99 to the shipped dynamic engine, all else equal. See the main
-project's `scripts/build_engine.py` and `pgie_config.txt` (`model-engine-file`).
-Expect a small gain since the dynamic engine was already built with `opt=4`.
+### E2 — engine shape (dynamic vs static batch) — *tested, see `static_engine_test/`*
+Built a static batch-4 engine (`models/model_static_b4_gpu0_fp16.engine`, kept
+alongside the dynamic one) and tested how it handles **partial batches** (from skip
+*and* from `sync-inputs` dropping a late frame). **Findings:** nvinfer processes the
+**actual N** frames — no crash, no "empty batch", no padding to 4 (compute scales
+with frames: 2-cam **51 ms** vs 4-cam **100 ms**, steady-state). It loads as an
+implicit-batch engine (max 4), which runs any batch ≤ 4. Speed is ~equal to the
+dynamic engine (both ~100 ms at batch 4), so the dynamic engine stays the default.
+Full write-up + reproduce scripts in
+[`static_engine_test/README.md`](static_engine_test/README.md).
 
 ### E3 / policy — camera skipping + adaptive timeout
 ```bash

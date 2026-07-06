@@ -1,0 +1,405 @@
+/* main.cpp — entrypoint for the multi-camera DeepStream detection + tracking
+ * app (C++ / NEW nvstreammux rewrite; baseline + sync-on variants only).
+ *
+ * Usage:
+ *     ./multicam_rt --config config/camera_params.yaml           # baseline
+ *     ./multicam_rt --config config/camera_params.yaml --sync    # sync-on
+ *
+ * What it does:
+ *   1. Forces USE_NEW_NVSTREAMMUX=yes (unless already set) BEFORE gst_init,
+ *      so the new mux implementation is what gets registered.
+ *   2. Parses CLI args and the YAML config; fails fast if a camera is missing.
+ *   3. Builds the pipeline (pipeline_builder.cpp) and attaches a pad probe on
+ *      nvtracker's src pad that parses detections into an OutputWriter.
+ *   4. Runs a GLib main loop until EOS / error / Ctrl-C, then shuts down
+ *      cleanly (EOS first, so recordings and metrics finalize).
+ */
+
+#include <glib-unix.h>
+#include <gst/gst.h>
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
+#include <stdexcept>
+#include <string>
+
+#include "app_config.hpp"
+#include "detection_parser.hpp"
+#include "fps_overlay.hpp"
+#include "gstnvdsmeta.h"
+#include "metrics.hpp"
+#include "output_writer.hpp"
+#include "pipeline_builder.hpp"
+
+using namespace mcrt;
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// CLI
+// ---------------------------------------------------------------------------
+struct Args {
+  std::string config = "config/camera_params.yaml";
+  std::string log_mode;              // "" -> json (or human with --debug)
+  bool display = false;
+  bool debug = false;
+  std::string record_path;
+  std::string metrics_csv;
+  double duration_s = 0.0;
+  Overrides ov;
+};
+
+void usage(const char* prog) {
+  std::fprintf(stderr,
+"Multi-camera DeepStream YOLO11n detection + tracking (Jetson, C++, NEW nvstreammux).\n"
+"\n"
+"Usage: %s [options]\n"
+"\n"
+"  --config PATH        YAML config (default: config/camera_params.yaml)\n"
+"  --sync               sync-on variant: nvstreammux sync-inputs=1 (time-align\n"
+"                       frames across cameras; late frames are DROPPED)\n"
+"  --no-sync            force the baseline (sync-inputs=0), overriding the YAML\n"
+"  --max-latency-ms N   sync-on only: extra wait for late frames (default 33)\n"
+"  --timeout-us N       batched-push-timeout in microseconds (default 33333)\n"
+"  --mux-config PATH    new-mux INI (default: config/mux_config.txt; 'none' to\n"
+"                       run on the mux's built-in defaults)\n"
+"  --source v4l2|file   live cameras (default) or deterministic file replay\n"
+"  --replay-dir DIR     per-camera replay clips cam0.mp4.. (default:\n"
+"                       experiments/clips) for --source file\n"
+"  --display            live tiled window with boxes + labels + track IDs\n"
+"  --record PATH        also record the annotated, tiled view to an H.264 MP4\n"
+"  --log MODE           console output: json (default) | human | none\n"
+"  --debug              shorthand for --display --log human\n"
+"  --metrics-csv PATH   write per-batch latency/throughput metrics (same schema\n"
+"                       as the Python harness; scripts/analyze.py reads it)\n"
+"  --duration SECS      stop cleanly after this many seconds (benchmarks)\n"
+"  -h, --help           this help\n",
+               prog);
+}
+
+/* Returns the value of a --key VALUE pair, advancing i; throws if missing. */
+std::string need_value(int argc, char** argv, int& i, const char* key) {
+  if (i + 1 >= argc)
+    throw std::runtime_error(std::string(key) + " needs a value.");
+  return argv[++i];
+}
+
+/* Strict numeric parsing: the whole token must be a number, and errors name
+ * the offending option ("--duration: expected a number, got 'abc'"). */
+double need_double(int argc, char** argv, int& i, const char* key) {
+  const std::string s = need_value(argc, argv, i, key);
+  std::size_t pos = 0;
+  double v = 0.0;
+  try {
+    v = std::stod(s, &pos);
+  } catch (const std::exception&) {
+    pos = std::string::npos;
+  }
+  if (pos != s.size())
+    throw std::runtime_error(std::string(key) + ": expected a number, got '" +
+                             s + "'.");
+  return v;
+}
+
+int64_t need_int(int argc, char** argv, int& i, const char* key) {
+  const std::string s = need_value(argc, argv, i, key);
+  std::size_t pos = 0;
+  int64_t v = 0;
+  try {
+    v = std::stoll(s, &pos);
+  } catch (const std::exception&) {
+    pos = std::string::npos;
+  }
+  if (pos != s.size())
+    throw std::runtime_error(std::string(key) + ": expected an integer, got '" +
+                             s + "'.");
+  return v;
+}
+
+Args parse_args(int argc, char** argv) {
+  Args a;
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg = argv[i];
+    if (arg == "-h" || arg == "--help") {
+      usage(argv[0]);
+      std::exit(0);
+    } else if (arg == "--config") {
+      a.config = need_value(argc, argv, i, "--config");
+    } else if (arg == "--sync") {
+      a.ov.sync = 1;
+    } else if (arg == "--no-sync") {
+      a.ov.sync = 0;
+    } else if (arg == "--max-latency-ms") {
+      a.ov.max_latency_ns =
+          static_cast<int64_t>(need_double(argc, argv, i, arg.c_str()) * 1e6);
+    } else if (arg == "--timeout-us") {
+      a.ov.timeout_us = need_int(argc, argv, i, arg.c_str());
+    } else if (arg == "--mux-config") {
+      a.ov.mux_config = need_value(argc, argv, i, arg.c_str());
+    } else if (arg == "--source") {
+      a.ov.source = need_value(argc, argv, i, arg.c_str());
+    } else if (arg == "--replay-dir") {
+      a.ov.replay_dir = need_value(argc, argv, i, arg.c_str());
+    } else if (arg == "--display") {
+      a.display = true;
+    } else if (arg == "--record") {
+      a.record_path = need_value(argc, argv, i, arg.c_str());
+    } else if (arg == "--log") {
+      a.log_mode = need_value(argc, argv, i, arg.c_str());
+    } else if (arg == "--debug") {
+      a.debug = true;
+    } else if (arg == "--metrics-csv") {
+      a.metrics_csv = need_value(argc, argv, i, arg.c_str());
+    } else if (arg == "--duration") {
+      a.duration_s = need_double(argc, argv, i, arg.c_str());
+    } else {
+      usage(argv[0]);
+      throw std::runtime_error("unknown argument: " + arg);
+    }
+  }
+  return a;
+}
+
+// ---------------------------------------------------------------------------
+// Detection probe (nvtracker src): parse meta -> writer (+ FPS meter)
+//
+// Runs on nvtracker's streaming thread, once per pushed BATCH (not per
+// camera frame) — one buffer carries the frames of every camera in the
+// batch. Returning GST_PAD_PROBE_OK lets the buffer continue to the tail
+// unchanged; this probe only reads.
+// ---------------------------------------------------------------------------
+struct ProbeCtx {
+  OutputWriter* writer;
+  FpsMeter* meter;  // nullptr when headless without recording
+};
+
+GstPadProbeReturn detection_probe(GstPad*, GstPadProbeInfo* info,
+                                  gpointer user_data) {
+  auto* ctx = static_cast<ProbeCtx*>(user_data);
+  GstBuffer* buf = GST_PAD_PROBE_INFO_BUFFER(info);
+  if (buf == nullptr) return GST_PAD_PROBE_OK;
+  NvDsBatchMeta* batch_meta = gst_buffer_get_nvds_batch_meta(buf);
+  if (batch_meta == nullptr) return GST_PAD_PROBE_OK;
+
+  const auto frames = parse_batch_meta(batch_meta);
+  if (ctx->meter != nullptr)
+    for (const auto& f : frames) ctx->meter->tick(f.camera_id);
+  ctx->writer->write_batch(frames);
+  return GST_PAD_PROBE_OK;
+}
+
+// ---------------------------------------------------------------------------
+// Bus / signals / duration
+// ---------------------------------------------------------------------------
+struct MainCtx {
+  GMainLoop* loop = nullptr;
+  GstElement* pipeline = nullptr;
+  int exit_code = 0;
+  int sigints = 0;
+  double duration_s = 0.0;
+  bool duration_fired = false;  // its source auto-removes after firing
+};
+
+gboolean bus_call(GstBus*, GstMessage* msg, gpointer data) {
+  auto* ctx = static_cast<MainCtx*>(data);
+  switch (GST_MESSAGE_TYPE(msg)) {
+    case GST_MESSAGE_EOS:
+      std::fprintf(stderr, "[main] End-of-stream — shutting down.\n");
+      g_main_loop_quit(ctx->loop);
+      break;
+    case GST_MESSAGE_ERROR: {
+      GError* err = nullptr;
+      gchar* dbg = nullptr;
+      gst_message_parse_error(msg, &err, &dbg);
+      std::fprintf(stderr, "[main] ERROR from %s: %s\n",
+                   GST_OBJECT_NAME(msg->src), err ? err->message : "?");
+      if (dbg != nullptr) std::fprintf(stderr, "[main] debug: %s\n", dbg);
+      g_clear_error(&err);
+      g_free(dbg);
+      ctx->exit_code = 1;
+      g_main_loop_quit(ctx->loop);
+      break;
+    }
+    case GST_MESSAGE_WARNING: {
+      GError* warn = nullptr;
+      gchar* dbg = nullptr;
+      gst_message_parse_warning(msg, &warn, &dbg);
+      std::fprintf(stderr, "[main] WARNING from %s: %s\n",
+                   GST_OBJECT_NAME(msg->src), warn ? warn->message : "?");
+      g_clear_error(&warn);
+      g_free(dbg);
+      break;
+    }
+    default:
+      break;
+  }
+  return TRUE;
+}
+
+/* First Ctrl-C: send EOS so the MP4/metrics finalize and the bus EOS quits the
+ * loop. Second Ctrl-C: quit immediately. */
+gboolean on_sigint(gpointer data) {
+  auto* ctx = static_cast<MainCtx*>(data);
+  ctx->sigints += 1;
+  if (ctx->sigints == 1) {
+    std::fprintf(stderr, "\n[main] Interrupted — flushing EOS (Ctrl-C again to force quit).\n");
+    gst_element_send_event(ctx->pipeline, gst_event_new_eos());
+  } else {
+    g_main_loop_quit(ctx->loop);
+  }
+  return G_SOURCE_CONTINUE;
+}
+
+gboolean on_duration(gpointer data) {
+  auto* ctx = static_cast<MainCtx*>(data);
+  ctx->duration_fired = true;
+  std::fprintf(stderr, "[main] duration %.1fs elapsed — stopping.\n",
+               ctx->duration_s);
+  gst_element_send_event(ctx->pipeline, gst_event_new_eos());
+  return G_SOURCE_REMOVE;
+}
+
+void make_parent_dirs(const std::string& path) {
+  if (path.empty()) return;
+  gchar* dir = g_path_get_dirname(path.c_str());
+  g_mkdir_with_parents(dir, 0755);
+  g_free(dir);
+}
+
+// ---------------------------------------------------------------------------
+// run() — the wiring hub. Order matters:
+//   1. config + validation (fail fast, before touching GStreamer)
+//   2. build the pipeline
+//   3. create writer/meter/metrics and attach their probes
+//   4. main loop (bus watch, SIGINT, optional duration timer)
+//   5. teardown: pipeline to NULL and unref FIRST, then close the writers —
+//      the pad probes hold raw pointers to objects on this stack, so those
+//      objects must outlive all streaming threads.
+// ---------------------------------------------------------------------------
+int run(const Args& args) {
+  // -- 1. Configuration. Both throw with an actionable message; main()
+  //       catches and exits 2 without a stack trace.
+  AppConfig cfg = load_config(args.config, args.ov);
+  validate_cameras(cfg.cameras);
+
+  const bool display = args.display || args.debug;
+  const std::string log_mode =
+      !args.log_mode.empty() ? args.log_mode : (args.debug ? "human" : "json");
+  const int n = static_cast<int>(cfg.cameras.size());
+
+  std::string banner =
+      "[main] " + std::to_string(n) + " camera(s) [" + cfg.source_type + "] " +
+      std::to_string(cfg.cameras[0].width) + "x" +
+      std::to_string(cfg.cameras[0].height) + "@" +
+      std::to_string(cfg.cameras[0].fps) + " (" + cfg.cameras[0].format +
+      "); NEW nvstreammux sync-inputs=" +
+      (cfg.mux.sync_inputs ? "ON" : "OFF") + " timeout=" +
+      std::to_string(cfg.mux.batched_push_timeout_us) + "us";
+  if (cfg.mux.config_file.empty()) banner += " mux-config=none";
+  banner += " log=" + log_mode;
+  if (display) banner += "; display window";
+  if (!args.record_path.empty()) banner += "; recording -> " + args.record_path;
+  if (!args.metrics_csv.empty()) banner += "; metrics -> " + args.metrics_csv;
+  if (cfg.mux.sync_inputs)
+    banner += "; max-latency=" +
+              std::to_string(cfg.mux.max_latency_ns / 1000000) + "ms";
+  std::fprintf(stderr, "%s.\n", banner.c_str());
+
+  // -- 2. Build the full GStreamer graph (see pipeline_builder.hpp for the
+  //       shape). `built` holds the owning pipeline ref plus borrowed
+  //       pointers to the elements we attach probes to.
+  BuiltPipeline built = build_pipeline(cfg, display, args.record_path);
+
+  // -- 3. Detection path: probe on nvtracker src -> parse -> writer.
+  //       The FpsMeter only exists when something visual will show it.
+  auto writer = make_writer(log_mode, cfg.output);
+  std::unique_ptr<FpsMeter> meter;
+  if (display || !args.record_path.empty()) meter = std::make_unique<FpsMeter>();
+
+  ProbeCtx probe_ctx{writer.get(), meter.get()};
+  attach_detection_probe(built.tracker, detection_probe, &probe_ctx);
+  if (meter != nullptr && built.tiler != nullptr)
+    attach_fps_overlay(built.tiler, n, meter.get());
+
+  // Optional per-batch CSV; attaches its own probes at the source bins,
+  // the mux and the tracker (see metrics.hpp for the three tap points).
+  std::unique_ptr<MetricsCollector> metrics;
+  if (!args.metrics_csv.empty()) {
+    metrics = std::make_unique<MetricsCollector>(
+        args.metrics_csv, n, cfg.mux.batched_push_timeout_us, n,
+        cfg.mux.sync_inputs);
+    metrics->attach(built.pipeline);
+  }
+
+  // -- 4. Main loop plumbing. Everything that can stop the app funnels into
+  //       one place: EOS on the bus quits the loop (errors do too). SIGINT
+  //       and --duration don't quit directly — they *send EOS* so sinks
+  //       (MP4 index!) and metrics finalize first.
+  MainCtx ctx;
+  ctx.loop = g_main_loop_new(nullptr, FALSE);
+  ctx.pipeline = built.pipeline;
+  ctx.duration_s = args.duration_s;
+
+  GstBus* bus = gst_element_get_bus(built.pipeline);
+  const guint bus_watch = gst_bus_add_watch(bus, bus_call, &ctx);
+  gst_object_unref(bus);
+
+  const guint sig_watch = g_unix_signal_add(SIGINT, on_sigint, &ctx);
+  guint dur_watch = 0;
+  if (args.duration_s > 0.0)
+    dur_watch = g_timeout_add(static_cast<guint>(args.duration_s * 1000.0),
+                              on_duration, &ctx);
+
+  if (gst_element_set_state(built.pipeline, GST_STATE_PLAYING) ==
+      GST_STATE_CHANGE_FAILURE) {
+    std::fprintf(stderr, "[main] Failed to set pipeline to PLAYING.\n");
+    gst_element_set_state(built.pipeline, GST_STATE_NULL);
+    gst_object_unref(built.pipeline);
+    g_main_loop_unref(ctx.loop);
+    return 1;
+  }
+
+  std::fprintf(stderr,
+               "[main] Running. First launch may build the TensorRT engine "
+               "(several minutes). Press Ctrl-C to stop.\n");
+  g_main_loop_run(ctx.loop);
+
+  // -- 5. Teardown. NULL-state stops all streaming threads, so after the
+  //       unref no probe can fire — only THEN is it safe to close (and later
+  //       destroy) the writer/metrics objects the probes point at.
+  if (dur_watch != 0 && !ctx.duration_fired) g_source_remove(dur_watch);
+  g_source_remove(sig_watch);
+  g_source_remove(bus_watch);
+  gst_element_set_state(built.pipeline, GST_STATE_NULL);
+  gst_object_unref(built.pipeline);
+  g_main_loop_unref(ctx.loop);
+
+  writer->close();
+  if (metrics != nullptr) metrics->close();
+  return ctx.exit_code;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  /* Must happen BEFORE gst_init: the env var decides which nvstreammux
+   * implementation the plugin registers. overwrite=0 → an explicit user
+   * setting wins (build_pipeline still verifies the new mux loaded). */
+  setenv("USE_NEW_NVSTREAMMUX", "yes", 0);
+
+  try {
+    Args args = parse_args(argc, argv);
+    std::fprintf(stderr, "[main] USE_NEW_NVSTREAMMUX=%s\n",
+                 getenv("USE_NEW_NVSTREAMMUX"));
+    gst_init(nullptr, nullptr);
+    make_parent_dirs(args.record_path);
+    make_parent_dirs(args.metrics_csv);
+    return run(args);
+  } catch (const std::exception& exc) {
+    // Configuration / device / pipeline-build errors: clear message, no trace.
+    std::fprintf(stderr, "[main] ERROR: %s\n", exc.what());
+    return 2;
+  }
+}

@@ -60,6 +60,10 @@ streammux:
   max_latency_ns: 33333333       # ~33ms (1 frame @30fps): extra wait to align a
                                  #   late frame. ONLY applied when sync_inputs=1;
                                  #   raise for jittery sources, lower for less latency.
+  # NEW-nvstreammux batching INI — used ONLY by the C++ app (cpp/), which runs
+  # the new mux (USE_NEW_NVSTREAMMUX=yes). The Python app (legacy mux) ignores
+  # it, and the new mux ignores width/height/live_source/nvbuf_memory_type above.
+  config_file: config/mux_config.txt
 
 # nvinfer (PGIE). The heavy model settings live in pgie_config.txt.
 pgie:

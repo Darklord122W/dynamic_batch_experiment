@@ -6,6 +6,12 @@
 > throughput vs. accuracy trade-offs discussed in the RT-BEV paper.
 > **See [`experiments/README.md`](experiments/README.md) for the experiment guide.**
 >
+> **C++ rewrite (NEW nvstreammux):** [`cpp/`](cpp/README.md) contains a C++
+> port of the **baseline** and **sync-on** variants running on the new
+> nvstreammux (`USE_NEW_NVSTREAMMUX=yes`) — build with `cd cpp && make`, then
+> follow [`cpp/TUTORIAL.md`](cpp/TUTORIAL.md). It reads this same config and
+> writes analyze.py-compatible metrics CSVs.
+>
 > New vs. the base pipeline:
 > - **Dynamic timeout** — `--timeout-policy fixed|adaptive` (`nvstreammux batched-push-timeout` adapted at runtime; `controllers.py`).
 > - **Camera skipping** — a `valve` per camera + `--context all|activity|scheduled` (`context.py`), for context-aware sub-batching.

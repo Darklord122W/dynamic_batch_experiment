@@ -1,0 +1,1 @@
+batch_idx,t_mono,n_in_batch,n_real,n_active,active_mask,timeout_us,mux_batch,compute_ms,e2e_ms,total_dets,new_ids_cum,dets_cam0,dets_cam1,dets_cam2,dets_cam3
