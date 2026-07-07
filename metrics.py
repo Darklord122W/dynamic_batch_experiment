@@ -81,7 +81,7 @@ class MetricsCollector:
         diag_path = os.environ.get("DIAG_SOURCES")
         if diag_path:
             self._diag = open(diag_path, "w", newline="")
-            self._diag.write("batch_idx,t_mono,n,source_ids,pts_skew_ms\n")
+            self._diag.write("batch_idx,t_mono,n,source_ids,pts_skew_ms,per_cam_offset_ms\n")
 
     # ---- called by the controllers each control tick --------------------- #
     def set_active_cameras(self, active: Set[int]) -> None:
@@ -192,8 +192,12 @@ class MetricsCollector:
             ids = sorted(s for s, _ in diag_srcs)
             pts = [p for _, p in diag_srcs if p]
             skew_ms = (max(pts) - min(pts)) / 1e6 if len(pts) > 1 else 0.0
+            # per-camera PTS offset from the batch's min PTS (ms), so we can SEE the
+            # actual inter-camera timestamp structure: e.g. "0=+0.0|1=+8.3|2=+16.9".
+            base = min(pts) if pts else 0
+            per = "|".join(f"{s}=+{(p - base)/1e6:.1f}" for s, p in sorted(diag_srcs))
             self._diag.write(f"{self._batch_idx},{now - self._t_start:.4f},"
-                             f"{len(ids)},{'|'.join(map(str, ids))},{skew_ms:.2f}\n")
+                             f"{len(ids)},{'|'.join(map(str, ids))},{skew_ms:.2f},{per}\n")
         self._batch_idx += 1
         return Gst.PadProbeReturn.OK
 

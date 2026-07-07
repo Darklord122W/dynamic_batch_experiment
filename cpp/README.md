@@ -42,6 +42,10 @@ cpp/
 ├── README.md                # this file
 ├── TUTORIAL.md              # step-by-step usage guide
 ├── ARCHITECTURE.md          # module + pipeline graphs; how files relate
+├── experiments/
+│   └── frame_timing/        # camera arrival-timing experiment: when frames
+│                            # really arrive, inter-camera skew at the mux,
+│                            # RT-BEV Fig.5 replica (own README + Makefile)
 └── src/
     ├── main.cpp             # CLI, env setup, bus/run loop, clean shutdown
     ├── app_config.[ch]pp    # YAML config load (yaml-cpp) + validation

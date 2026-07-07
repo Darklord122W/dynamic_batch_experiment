@@ -1,0 +1,2 @@
+push_ms,mean_n_in_batch,frac_full,batches_s,frames_s,e2e_mean_ms,e2e_p99_ms,compute_mean_ms,frac_0,frac_1,frac_2,frac_3,frac_4
+33.3,3.868,0.893,30.15,116.63,70.41,124.62,53.07,0.0000,0.0000,0.0247,0.0823,0.8930
