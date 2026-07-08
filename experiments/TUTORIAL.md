@@ -12,7 +12,9 @@ cd ~/Documents/deepstream_batch/multicam_perception_rt
 ## Step 0 — one-time prerequisites
 
 - Cameras plugged in (for recording). For replay experiments you only need clips.
-- Model built once: `ls models/*.engine` → `model_b4_gpu0_fp16.engine`. If missing:
+- Model built once: `ls models/*.engine` → two engines: `model_b4_gpu0_fp16.engine`
+  (the dynamic-batch default the app uses) and `model_static_b4_gpu0_fp16.engine`
+  (static batch-4, kept from `static_engine_test/`). If the dynamic one is missing:
   ```bash
   ./scripts/download_yolo11n.sh
   python3 scripts/build_engine.py
@@ -55,7 +57,10 @@ python3 scripts/record_replay_clips.py --display
 
 > Clips may differ slightly in length (USB bandwidth causes per-camera frame
 > drops). Keep experiment `--duration` a few seconds under the shortest clip so
-> all cameras have data the whole time.
+> all cameras have data the whole time. The shipped `experiments/clips/` set was
+> stopped manually, not with `--duration 40`, so the clips are longer and unequal:
+> cam0 45.7 s, cam1 75.3 s, cam2 66.3 s, cam3 60.0 s — the 25 s baseline runs fit
+> comfortably inside the shortest (cam0).
 
 ---
 
@@ -159,7 +164,13 @@ Make it trustworthy:
 4. When studying the timeout, look at the **wait** (`e2e − compute`) — the
    low-noise signal (the compute noise cancels).
 5. **Replay inflates absolutes ~3×** (4× H.264 decode load) vs live — relative
-   comparisons transfer, absolute numbers don't.
+   comparisons transfer, absolute numbers don't. (errata 2026-07-07: this holds
+   for the Python/legacy-mux app only — the C++ new-mux app shows replay p50
+   28 ms with the min-fps=120 INI, no such inflation; see
+   `results/param_sweep_locked/`.)
+6. **Lock clocks first** (`sudo jetson_clocks`) for any C++ or cross-app
+   comparison — unlocked DVFS flips the C++ app between latency regimes mid-run
+   (see `results/baseline_cpp_vs_py_locked/`).
 
 ---
 

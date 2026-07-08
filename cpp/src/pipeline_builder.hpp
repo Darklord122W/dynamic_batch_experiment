@@ -32,7 +32,9 @@
 
 #include <gst/gst.h>
 
+#include <memory>
 #include <string>
+#include <vector>
 
 #include "app_config.hpp"
 
@@ -43,6 +45,11 @@ struct BuiltPipeline {
   GstElement* mux = nullptr;       // borrowed (owned by the pipeline)
   GstElement* tracker = nullptr;   // borrowed
   GstElement* tiler = nullptr;     // borrowed; nullptr when headless
+  /* User-data of the pad probes the builder attaches (PTS-restore fix,
+   * replay-skew injection). The probes hold raw pointers into these, so keep
+   * the BuiltPipeline alive until after set_state(NULL). shared_ptr<void>
+   * type-erases the ctx types (they are private to pipeline_builder.cpp). */
+  std::vector<std::shared_ptr<void>> probe_ctxs;
 };
 
 /* Build the full pipeline from the parsed config. Throws std::runtime_error

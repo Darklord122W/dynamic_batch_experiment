@@ -158,13 +158,25 @@ graph LR
 Notes:
 - **`identity sync=true`** is the replay-realism trick: it paces each stream
   against the pipeline clock *right after the decoder*, so frames arrive at
-  the mux with live timing. (The new mux has no `live-source` property, and
-  pacing at the sink can't restore per-source arrival phase — which is what
-  `--sync` experiments depend on.)
+  the mux with real-time pacing. (The new mux has no `live-source` property,
+  and pacing at the sink can't restore per-source arrival phase — which is
+  what `--sync` experiments depend on.) Qualifier: it restores real-time
+  *pacing* only — not the live cameras' startup stagger or per-camera rate
+  skew — so plain paced replay is the *ideal-timing* case. Faithful skewed
+  replay exists both in `cpp/experiments/frame_timing/REPLAY_SKEW.md` and in
+  the production app itself via `--skew-ms/--rate/--gap-every/--ring/
+  --restamp` (added 2026-07-07).
 - **`qtdemux`'s pads are dynamic** — the `pad-added` signal links its video
   pad to `h264parse` at runtime (`on_demux_pad_added`).
 - **MJPEG decode is `jpegparse ! nvjpegdec`, never `nvv4l2decoder mjpeg=1`** —
   the C920 emits 4:2:2 JPEG; nvv4l2decoder only handles 4:2:0.
+- **`jpegparse` PTS restore** (MJPEG fronts; default ON, `--no-pts-fix` to
+  disable): probes on jpegparse's sink/src pads capture the true kernel
+  capture stamp on entry and re-apply it on exit. Why it exists: GStreamer
+  1.20's jpegparse (GstBaseParse) re-stamps live PTS onto a per-camera
+  33.33 ms grid anchored at that camera's own first frame — offset 1.05–1.5 s
+  by USB startup stagger — which is what starved `sync-inputs`
+  (see `cpp/experiments/frame_timing/`).
 
 ### 3.2 The shared trunk (both variants, all modes)
 

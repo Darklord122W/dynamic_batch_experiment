@@ -23,7 +23,10 @@ Python bindings (`pyds`) needed for the C++ app.
   ```
 - **Model artifacts** in `models/` (shared with the Python app):
   `yolo11n.onnx`, `labels.txt`, `nvdsinfer_custom_impl_Yolo/…​.so`, and the
-  prebuilt engine `model_b4_gpu0_fp16.engine`. If missing:
+  prebuilt engine `model_b4_gpu0_fp16.engine`. A static-batch companion pair
+  also exists — `models/model_static_b4_gpu0_fp16.engine` +
+  `config/_pgie_static.txt` (fixed batch=4; point `pgie.config_file` at it;
+  see `experiments/static_engine_test/`). If missing:
   ```bash
   ./scripts/download_yolo11n.sh
   python3 scripts/build_engine.py     # optional: pre-build without cameras
@@ -114,16 +117,28 @@ What you will see with free-running USB cameras (measured, 10 s live run):
 
 That is the point of keeping this variant: it demonstrates (like the Python
 campaign did) that input synchronization is **pure cost** for independent
-per-camera detection — it exists for camera-fusion pipelines. USB webcams have
-no hardware trigger, so it aligns by *arrival* time, not true exposure.
+per-camera detection — it exists for camera-fusion pipelines. What
+`sync-inputs` actually compares (proven in `cpp/experiments/frame_timing/`):
+before the 2026-07-07 PTS fix, `jpegparse` re-stamped each camera's live PTS
+onto its own 33.33 ms grid anchored at that camera's first frame — offset
+1.05–1.5 s by USB startup stagger — so the mux was aligning *fabricated grid
+timestamps*; with the PTS fix (on by default, `--no-pts-fix` to disable) it
+compares the true kernel capture stamps.
 
 Sync-on tuning knobs:
 - `--max-latency-ms` — how late a frame may be and still join the batch.
   Larger = fuller batches, more latency.
 - `overall-min-fps` in `config/mux_config.txt` — the cadence at which the mux
-  pushes **incomplete** batches. We ship 30 (≈ the legacy mux's 33 ms
-  `batched-push-timeout` behaviour); at the new-mux default of 5 a partial
-  batch leaves only every 200 ms.
+  pushes **incomplete** batches (at the new-mux default of 5 a partial batch
+  leaves only every 200 ms). It is *not* just a sync-on knob: the shipped
+  min-fps=30 also held **full baseline batches** back ~115 ms (measured: e2e
+  p50 162.7 ms with the shipped INI vs 28.3 ms with min-fps=120). For latency
+  work use a min-fps=120 INI or `--mux-config none`; see
+  `experiments/results/param_sweep_locked/README.md`. Landmine:
+  `batched-push-timeout` (the `--timeout-us` property) and the INI's
+  `overall-min-fps` are the **same internal knob** — last writer wins
+  (`nvstreammux_batch.cpp:333`). Since 2026-07-07 the app loads the INI
+  first, so `--timeout-us` wins.
 
 ## Step 5 — metrics + analysis (the A/B workflow)
 
@@ -132,6 +147,7 @@ existing analysis scripts work unchanged:
 
 ```bash
 # reproducible A/B on the same clips:
+mkdir -p results   # MetricsCollector's fopen() does not create parent dirs
 ./cpp/multicam_rt --config config/camera_params.yaml --source file --log none \
                   --metrics-csv results/cpp_baseline.csv --duration 25
 ./cpp/multicam_rt --config config/camera_params.yaml --source file --log none \
@@ -145,13 +161,14 @@ Columns (same as `metrics.py`): `n_in_batch` (frames the mux batched),
 `n_real` (frames matched to a true source arrival), `compute_ms`
 (mux→tracker), `e2e_ms` (source→tracker, includes the batch wait),
 per-camera detections, `new_ids_cum` (track-stability proxy). Two extra
-trailing columns:
+trailing columns, in this order — `…,drops_cum,arrivals_cum` (errata
+2026-07-07: this list previously showed them reversed):
 
+- `drops_cum` — the new mux's `dropped` signal count. Measured caveat: on
+  DS 7.1 sync discards do *not* fire it; trust `arrivals_cum` instead.
 - `arrivals_cum` — frames that arrived at the source pads so far. **Sync loss
   = arrivals_cum − Σ n_real**; the closing summary prints it
   (`processed X of Y arrived frames`).
-- `drops_cum` — the new mux's `dropped` signal count. Measured caveat: on
-  DS 7.1 sync discards do *not* fire it; trust `arrivals_cum` instead.
 
 Always discard a warmup window (`--warmup 4`): the first seconds include
 engine deserialization and CUDA autotuning. Replay inflates absolute compute
@@ -187,7 +204,7 @@ annotated view to H.264 MP4 and works headless. Stop with Ctrl-C (not
 | `--config PATH` | YAML config (default `config/camera_params.yaml`) |
 | `--sync` / `--no-sync` | force sync-on / baseline (overrides `streammux.sync_inputs`) |
 | `--max-latency-ms N` | sync window for late frames (default 33 ms) |
-| `--timeout-us N` | mux `batched-push-timeout` (default 33333) |
+| `--timeout-us N` | mux `batched-push-timeout` (default 33333; same internal knob as the INI's `overall-min-fps` — since 2026-07-07 the INI loads first, so this flag wins). **Sync-on: leave at 33333** — larger values overwrite the mux EARLY gate |
 | `--mux-config PATH\|none` | new-mux batching INI (default `config/mux_config.txt`) |
 | `--source v4l2\|file` | live cameras (default) or replay clips |
 | `--replay-dir DIR` | clip directory for `--source file` (default `experiments/clips`) |
@@ -218,8 +235,13 @@ nvbuf_memory_type`) and the RT-experiment sections (`timeout:`/`context:`/
 - **Engine rebuild loop or "engine file not found"** — regenerate with
   `python3 scripts/build_engine.py`; engines are not portable across
   TensorRT/JetPack versions.
-- **Sync-on processes almost nothing** — expected with free-running cameras
-  and a tight window; raise `--max-latency-ms`, or accept the drop (that's the
-  experiment's finding). Check `processed X of Y` in the metrics summary.
+- **Sync-on processes almost nothing** — pre-PTS-fix framing (before
+  2026-07-07): jpegparse re-stamped each camera onto its own 33.33 ms grid
+  offset 1.05–1.5 s by USB startup stagger, so alignment needed a window
+  ≥1.05–1.47 s and the only viable config was `--sync --max-latency-ms 2000
+  --timeout-us 33333`. Never raise `--timeout-us` for sync-on — larger values
+  overwrite the mux EARLY gate. With the PTS fix on (default), the mux
+  compares true capture stamps and tight windows behave as intended; check
+  `processed X of Y` in the metrics summary.
 - **JSON consumer chokes on plugin chatter** — filter stdout with
   `grep '^{'`; all app JSON is single-line and starts at column 0.

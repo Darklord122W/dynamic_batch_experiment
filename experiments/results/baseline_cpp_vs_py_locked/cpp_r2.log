@@ -1,0 +1,34 @@
+[main] USE_NEW_NVSTREAMMUX=yes
+[main] 4 camera(s) [file] 640x480@30 (mjpeg); NEW nvstreammux sync-inputs=OFF timeout=33333us log=none; metrics -> experiments/results/baseline_cpp_vs_py_locked/cpp_baseline_r2.csv.
+max_fps_dur 8.33333e+06 min_fps_dur 2e+08
+Opening in BLOCKING MODE 
+Opening in BLOCKING MODE 
+Opening in BLOCKING MODE 
+Opening in BLOCKING MODE 
+gstnvtracker: Loading low-level lib at /opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so
+[NvMultiObjectTracker] Initialized
+Setting min object dimensions as 16x16 instead of 1x1 to support VIC compute mode.
+0:00:00.401677127 [32m12145[00m 0xaaaaca36f990 [36mINFO   [00m [00m             nvinfer gstnvinfer.cpp:684:gst_nvinfer_logger:<primary-inference>[00m NvDsInferContext[UID 1]: Info from NvDsInferContextImpl::deserializeEngineAndBackend() <nvdsinfer_context_impl.cpp:2092> [UID = 1]: deserialized trt engine from :/home/darklord01/Documents/deepstream_batch/multicam_perception_rt/models/model_b4_gpu0_fp16.engine
+0:00:00.401836612 [32m12145[00m 0xaaaaca36f990 [36mINFO   [00m [00m             nvinfer gstnvinfer.cpp:684:gst_nvinfer_logger:<primary-inference>[00m NvDsInferContext[UID 1]: Info from NvDsInferContextImpl::generateBackendContext() <nvdsinfer_context_impl.cpp:2195> [UID = 1]: Use deserialized engine model: /home/darklord01/Documents/deepstream_batch/multicam_perception_rt/models/model_b4_gpu0_fp16.engine
+0:00:00.410554749 [32m12145[00m 0xaaaaca36f990 [36mINFO   [00m [00m             nvinfer gstnvinfer_impl.cpp:343:notifyLoadModelStatus:<primary-inference>[00m [UID 1]: Load new model:/home/darklord01/Documents/deepstream_batch/multicam_perception_rt/config/pgie_config.txt sucessfully
+[main] Running. First launch may build the TensorRT engine (several minutes). Press Ctrl-C to stop.
+NvMMLiteOpen : Block : BlockType = 261 
+NvMMLiteOpen : Block : BlockType = 261 
+NvMMLiteOpen : Block : BlockType = 261 
+NvMMLiteOpen : Block : BlockType = 261 
+NvMMLiteBlockCreate : Block : BlockType = 261 
+NvMMLiteBlockCreate : Block : BlockType = 261 
+NvMMLiteBlockCreate : Block : BlockType = 261 
+NvMMLiteBlockCreate : Block : BlockType = 261 
+0:00:00.519134508 [32m12145[00m 0xaaaac9efbe40 [33;01mWARN   [00m [00m      nvvideoconvert gstnvvideoconvert.c:2101:gst_nvvideoconvert_fixate_caps:<cam-conv-0>[00m nvbuf-memory-type property is set based on SRC caps. Property config setting (if any) is overridden!!
+0:00:00.519207082 [32m12145[00m 0xaaaac9efbe40 [33;01mWARN   [00m [00m      nvvideoconvert gstnvvideoconvert.c:2106:gst_nvvideoconvert_fixate_caps:<cam-conv-0>[00m gpu-id property is set based on SRC caps. Property config setting (if any) is overridden!!
+[main] duration 25.0s elapsed — stopping.
+[main] End-of-stream — shutting down.
+WARNING: [TRT]: Using an engine plan file across different models of devices is not recommended and is likely to affect performance or even cause errors.
+INFO: [FullDims Engine Info]: layers num: 2
+0   INPUT  kFLOAT input           3x640x640       min: 1x3x640x640     opt: 4x3x640x640     Max: 4x3x640x640     
+1   OUTPUT kFLOAT output          8400x6          min: 0               opt: 0               Max: 0               
+
+max_fps_dur 8.33333e+06 min_fps_dur 3.33333e+07
+[NvMultiObjectTracker] De-initialized
+[metrics] wrote 768 batches to experiments/results/baseline_cpp_vs_py_locked/cpp_baseline_r2.csv (30.0 batches/s over 25.6s; 28 distinct tracks; sync off; processed 3021 of 3021 arrived frames; mux dropped-signal count 0).

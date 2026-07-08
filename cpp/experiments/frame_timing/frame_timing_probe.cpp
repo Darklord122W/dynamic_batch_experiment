@@ -56,6 +56,7 @@
 
 #include <cinttypes>
 #include <cstdio>
+#include <deque>
 #include <fstream>
 #include <cstdlib>
 #include <cstring>
@@ -118,6 +119,10 @@ struct Args {
   int64_t timeout_us = 33333;         // batched-push-timeout
   std::string mux_config;             // optional new-mux INI ('' = none)
   std::string extra_controls;         // v4l2 UVC controls "k=v,k=v" ('' = none)
+  bool pts_fix = false;               // live mode: restore true kernel capture
+                                      // PTS around jpegparse (the production
+                                      // app's fix; default off = the historic
+                                      // instrument behaviour)
 
   // ---- replay mode (file sources instead of live cameras) ----
   std::string replay_dir;             // '' = live v4l2 mode
@@ -159,6 +164,10 @@ void usage(const char* prog) {
 "  --extra-controls S   v4l2 UVC controls for every camera, 'k=v,k=v'.\n"
 "                       e.g. 'exposure_auto_priority=0' pins the frame rate\n"
 "                       (stops auto-exposure from halving fps in dim light)\n"
+"  --pts-fix            live mode: restore the true kernel capture PTS around\n"
+"                       jpegparse (what the production app now does by\n"
+"                       default). Off = historic behaviour: the mux sees\n"
+"                       jpegparse's synthetic per-camera grid\n"
 "\n"
 "replay mode (recorded clips instead of live cameras — see REPLAY_SKEW.md):\n"
 "  --replay-dir DIR     read cam0.mp4..cam<N-1>.mp4; each is decoded, skewed,\n"
@@ -223,6 +232,8 @@ Args parse_args(int argc, char** argv) {
       a.mux_config = need_value(argc, argv, i, arg.c_str());
     } else if (arg == "--extra-controls") {
       a.extra_controls = need_value(argc, argv, i, arg.c_str());
+    } else if (arg == "--pts-fix") {
+      a.pts_fix = true;
     } else if (arg == "--replay-dir") {
       a.replay_dir = need_value(argc, argv, i, arg.c_str());
     } else if (arg == "--num-cams") {
@@ -392,6 +403,52 @@ GstPadProbeReturn postmux_probe(GstPad*, GstPadProbeInfo* info, gpointer ud) {
 }
 
 // ---------------------------------------------------------------------------
+// Live-mode jpegparse PTS-restore fix (--pts-fix) — mirrors the production
+// app (../../src/pipeline_builder.cpp). jpegparse (GstBaseParse) re-stamps
+// output onto an ideal first_pts + n/fps grid; since v4l2src emits one
+// complete JPEG per buffer the element is 1-in-1-out, so recording each true
+// input PTS on the sink pad and re-applying it on the src pad restores the
+// kernel capture stamp downstream (premux.csv then shows TRUE timestamps).
+// ---------------------------------------------------------------------------
+struct PtsFixCtx {
+  std::mutex mu;
+  std::deque<GstClockTime> fifo;
+  int cam = 0;
+  long warned = 0;
+};
+
+GstPadProbeReturn pts_fix_sink_probe(GstPad*, GstPadProbeInfo* info,
+                                     gpointer ud) {
+  auto* ctx = static_cast<PtsFixCtx*>(ud);
+  GstBuffer* buf = GST_PAD_PROBE_INFO_BUFFER(info);
+  if (buf == nullptr || !GST_BUFFER_PTS_IS_VALID(buf)) return GST_PAD_PROBE_OK;
+  std::lock_guard<std::mutex> lock(ctx->mu);
+  ctx->fifo.push_back(GST_BUFFER_PTS(buf));
+  if (ctx->fifo.size() > 4) {  // 1-in-1-out: depth should stay ~1
+    ctx->fifo.pop_front();
+    if (ctx->warned++ == 0)
+      std::fprintf(stderr,
+                   "[probe] pts-fix cam %d: jpegparse buffered >4 frames — "
+                   "restored PTS may lag one period.\n", ctx->cam);
+  }
+  return GST_PAD_PROBE_OK;
+}
+
+GstPadProbeReturn pts_fix_src_probe(GstPad*, GstPadProbeInfo* info,
+                                    gpointer ud) {
+  auto* ctx = static_cast<PtsFixCtx*>(ud);
+  GstBuffer* buf = GST_PAD_PROBE_INFO_BUFFER(info);
+  if (buf == nullptr) return GST_PAD_PROBE_OK;
+  std::lock_guard<std::mutex> lock(ctx->mu);
+  if (ctx->fifo.empty()) return GST_PAD_PROBE_OK;
+  buf = gst_buffer_make_writable(buf);
+  GST_BUFFER_PTS(buf) = ctx->fifo.front();
+  ctx->fifo.pop_front();
+  info->data = buf;
+  return GST_PAD_PROBE_OK;
+}
+
+// ---------------------------------------------------------------------------
 // Replay-mode skew machinery (see REPLAY_SKEW.md for the full rationale).
 //
 // A live camera has TWO timelines that a naive file replay collapses into one:
@@ -519,6 +576,7 @@ struct Built {
   std::vector<GstElement*> p0_elems;  // element whose src pad is probe P0:
                                       // v4l2src (live) / pacing identity (replay)
   std::vector<GstElement*> decoders;  // replay only: skew probes attach here
+  std::vector<GstElement*> jparsers;  // live only: --pts-fix probes attach here
 };
 
 Built build_pipeline(const Args& args) {
@@ -536,14 +594,22 @@ Built build_pipeline(const Args& args) {
         "(check your environment).");
   g_object_set(b.mux, "batch-size", static_cast<guint>(cam_count(args)),
                nullptr);
+  /* The push deadline the new mux HONOURS is the INI's overall-min-fps —
+   * the batched-push-timeout property below was measured inert on DS 7.1
+   * (identical fill/batch-rate from 1 to 100 ms, with and without an INI;
+   * campaign_2026-07-07_ptsfix). With no --mux-config the mux default
+   * min-fps=5 applies: a 200 ms service cycle, which under --sync throttled
+   * live capture to 20.5 fps/cam and set staleness ~310 ms (sync_fixed_ml33).
+   * Pass an INI to control the cycle. Property set after the INI so a future
+   * DS release that honours it would let the CLI win. */
+  if (!args.mux_config.empty())
+    g_object_set(b.mux, "config-file-path", args.mux_config.c_str(), nullptr);
   g_object_set(b.mux, "batched-push-timeout",
                static_cast<gint>(args.timeout_us), nullptr);
   g_object_set(b.mux, "sync-inputs", args.sync_inputs ? TRUE : FALSE, nullptr);
   if (args.sync_inputs)
     g_object_set(b.mux, "max-latency",
                  static_cast<guint64>(args.max_latency_ns), nullptr);
-  if (!args.mux_config.empty())
-    g_object_set(b.mux, "config-file-path", args.mux_config.c_str(), nullptr);
   gst_bin_add(bin, b.mux);
 
   for (int i = 0; i < cam_count(args); ++i) {
@@ -574,6 +640,7 @@ Built build_pipeline(const Args& args) {
       gst_bin_add_many(bin, src, srccaps, jparse, jdec, nullptr);
       link_chain({src, srccaps, jparse, jdec});
       b.p0_elems.push_back(src);
+      b.jparsers.push_back(jparse);
       head_last = jdec;
     } else {
       // ---- replay front: decode, inject skew, pace, re-stamp ----
@@ -682,6 +749,26 @@ void attach_probes(const Built& b, Recorder* rec,
   gst_object_unref(p2);
 }
 
+/* Live only (--pts-fix): restore true capture PTS around each jpegparse.
+ * These attach to jpegparse's own pads, so they cannot race the P0/P1 probes
+ * (different pads); P1 then records the RESTORED (true) timestamps. */
+void attach_pts_fix_probes(const Built& b,
+                           std::vector<std::unique_ptr<PtsFixCtx>>* ctxs) {
+  for (std::size_t i = 0; i < b.jparsers.size(); ++i) {
+    auto ctx = std::make_unique<PtsFixCtx>();
+    ctx->cam = static_cast<int>(i);
+    GstPad* sink = gst_element_get_static_pad(b.jparsers[i], "sink");
+    GstPad* src = gst_element_get_static_pad(b.jparsers[i], "src");
+    gst_pad_add_probe(sink, GST_PAD_PROBE_TYPE_BUFFER, pts_fix_sink_probe,
+                      ctx.get(), nullptr);
+    gst_pad_add_probe(src, GST_PAD_PROBE_TYPE_BUFFER, pts_fix_src_probe,
+                      ctx.get(), nullptr);
+    gst_object_unref(sink);
+    gst_object_unref(src);
+    ctxs->push_back(std::move(ctx));
+  }
+}
+
 /* Replay only. MUST run after attach_probes: probes on one pad fire in the
  * order they were added, and the restamp probe has to see each buffer AFTER
  * the P0 capture probe recorded its true (pace) PTS. */
@@ -784,6 +871,7 @@ void write_meta(const Args& args, int64_t base_time_ns,
   std::fprintf(f, "  \"mux_config\": \"%s\",\n", args.mux_config.c_str());
   std::fprintf(f, "  \"extra_controls\": \"%s\",\n",
                args.extra_controls.c_str());
+  std::fprintf(f, "  \"pts_fix\": %s,\n", args.pts_fix ? "true" : "false");
   std::fprintf(f, "  \"replay_dir\": \"%s\",\n", args.replay_dir.c_str());
   if (!args.replay_dir.empty()) {
     std::fprintf(f, "  \"skew_ms\": [");
@@ -878,6 +966,9 @@ int run(const Args& args) {
   rec.reserve(cam_count(args), args.duration_s, args.fps);
   std::vector<std::unique_ptr<CamProbeCtx>> ctxs;
   attach_probes(built, &rec, &ctxs);
+  std::vector<std::unique_ptr<PtsFixCtx>> pts_fix_ctxs;
+  if (args.pts_fix && args.replay_dir.empty())
+    attach_pts_fix_probes(built, &pts_fix_ctxs);
   std::vector<std::unique_ptr<ReplayCtx>> replay_ctxs;
   if (!args.replay_dir.empty())
     attach_replay_probes(built, args, &replay_ctxs);
@@ -907,10 +998,11 @@ int run(const Args& args) {
   if (args.replay_dir.empty()) {
     std::fprintf(stderr,
                  "[probe] %d cam(s) %dx%d@%d MJPG->%s, sync-inputs=%s, "
-                 "timeout=%" PRId64 "us -> %s (%.0fs)\n",
+                 "timeout=%" PRId64 "us, pts-fix=%s -> %s (%.0fs)\n",
                  cam_count(args), args.width, args.height, args.fps,
                  args.decoder.c_str(), args.sync_inputs ? "ON" : "OFF",
-                 args.timeout_us, args.out_dir.c_str(), args.duration_s);
+                 args.timeout_us, args.pts_fix ? "ON" : "off",
+                 args.out_dir.c_str(), args.duration_s);
   } else {
     std::string skews, rates;
     for (int i = 0; i < args.num_cams; ++i) {

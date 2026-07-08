@@ -1,0 +1,19 @@
+[main] USE_NEW_NVSTREAMMUX=yes
+[main] 4 camera(s) [file] 640x480@30 (mjpeg); NEW nvstreammux sync-inputs=ON timeout=100000us; replay-skew [skew-ms=0.000000,1134.800000,1702.100000,567.200000 rate=0.960630,0.960990,0.960870,0.961280 gap-every=44 ring=4 restamp=off]; pgie=/home/darklord01/Documents/deepstream_batch/multicam_perception_rt/config/pgie_config.txt log=json; metrics -> /home/darklord01/Documents/deepstream_batch/multicam_perception_rt/experiments/results/timeout_sweep_cpp_dynamic_sync/push_100ms.csv; max-latency=33ms.
+0:00:00.412251570 [35m22798[00m 0xaaaaef8a7520 [36mINFO   [00m [00m             nvinfer gstnvinfer.cpp:684:gst_nvinfer_logger:<primary-inference>[00m NvDsInferContext[UID 1]: Info from NvDsInferContextImpl::deserializeEngineAndBackend() <nvdsinfer_context_impl.cpp:2092> [UID = 1]: deserialized trt engine from :/home/darklord01/Documents/deepstream_batch/multicam_perception_rt/models/model_b4_gpu0_fp16.engine
+0:00:00.412375959 [35m22798[00m 0xaaaaef8a7520 [36mINFO   [00m [00m             nvinfer gstnvinfer.cpp:684:gst_nvinfer_logger:<primary-inference>[00m NvDsInferContext[UID 1]: Info from NvDsInferContextImpl::generateBackendContext() <nvdsinfer_context_impl.cpp:2195> [UID = 1]: Use deserialized engine model: /home/darklord01/Documents/deepstream_batch/multicam_perception_rt/models/model_b4_gpu0_fp16.engine
+0:00:00.466378095 [35m22798[00m 0xaaaaef8a7520 [36mINFO   [00m [00m             nvinfer gstnvinfer_impl.cpp:343:notifyLoadModelStatus:<primary-inference>[00m [UID 1]: Load new model:/home/darklord01/Documents/deepstream_batch/multicam_perception_rt/config/pgie_config.txt sucessfully
+[main] Running. First launch may build the TensorRT engine (several minutes). Press Ctrl-C to stop.
+NvMMLiteOpen : Block : BlockType = 261 
+NvMMLiteOpen : Block : BlockType = 261 
+NvMMLiteBlockCreate : Block : BlockType = 261 
+NvMMLiteBlockCreate : Block : BlockType = 261 
+NvMMLiteOpen : Block : BlockType = 261 
+NvMMLiteOpen : Block : BlockType = 261 
+NvMMLiteBlockCreate : Block : BlockType = 261 
+NvMMLiteBlockCreate : Block : BlockType = 261 
+0:00:00.573912777 [35m22798[00m 0xaaaaef42d700 [33;01mWARN   [00m [00m      nvvideoconvert gstnvvideoconvert.c:2101:gst_nvvideoconvert_fixate_caps:<cam-conv-3>[00m nvbuf-memory-type property is set based on SRC caps. Property config setting (if any) is overridden!!
+0:00:00.573986285 [35m22798[00m 0xaaaaef42d700 [33;01mWARN   [00m [00m      nvvideoconvert gstnvvideoconvert.c:2106:gst_nvvideoconvert_fixate_caps:<cam-conv-3>[00m gpu-id property is set based on SRC caps. Property config setting (if any) is overridden!!
+[main] duration 45.0s elapsed — stopping.
+[main] End-of-stream — shutting down.
+[metrics] wrote 1318 batches to /home/darklord01/Documents/deepstream_batch/multicam_perception_rt/experiments/results/timeout_sweep_cpp_dynamic_sync/push_100ms.csv (28.5 batches/s over 46.2s; 62 distinct tracks; sync ON; processed 5195 of 5282 arrived frames; mux dropped-signal count 0).

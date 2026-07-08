@@ -42,6 +42,28 @@ T get(const YAML::Node& n, const std::string& key, const T& dflt) {
   }
 }
 
+/* "a,b,c" -> vector<double>; throws naming the option on a bad token. */
+std::vector<double> parse_double_list(const std::string& s, const char* what) {
+  std::vector<double> out;
+  std::stringstream ss(s);
+  std::string tok;
+  while (std::getline(ss, tok, ',')) {
+    if (tok.empty()) continue;
+    std::size_t pos = 0;
+    double v = 0.0;
+    try {
+      v = std::stod(tok, &pos);
+    } catch (const std::exception&) {
+      pos = std::string::npos;
+    }
+    if (pos != tok.size())
+      throw std::runtime_error(std::string(what) + ": bad number '" + tok +
+                               "' in '" + s + "'.");
+    out.push_back(v);
+  }
+  return out;
+}
+
 /* Bool that accepts both YAML spellings: 0/1 and true/false/on/off. */
 bool get_bool(const YAML::Node& n, const std::string& key, bool dflt) {
   if (!n || !n[key] || n[key].IsNull()) return dflt;
@@ -85,6 +107,12 @@ AppConfig load_config(const std::string& path, const Overrides& ov) {
   const int def_fps = get<int>(capture, "fps", 30);
   const std::string def_mjpeg_dec =
       get<std::string>(capture, "mjpeg_decoder", "nvjpegdec");
+  /* jpegparse (GStreamer 1.20) re-stamps live-camera PTS onto a synthetic
+   * per-camera grid, destroying true capture timing (measured: constant
+   * 1.05–1.47 s cross-camera offsets). pts_fix restores the kernel capture
+   * stamp on jpegparse's output — ON by default; --no-pts-fix for A/B. */
+  bool def_pts_fix = get_bool(capture, "pts_fix", true);
+  if (ov.pts_fix >= 0) def_pts_fix = (ov.pts_fix != 0);
 
   // --- source: live v4l2 cameras (default) or deterministic file replay -----
   YAML::Node source = root["source"];
@@ -110,6 +138,7 @@ AppConfig load_config(const std::string& path, const Overrides& ov) {
     cam.height = def_height;
     cam.fps = def_fps;
     cam.mjpeg_decoder = def_mjpeg_dec;
+    cam.pts_fix = def_pts_fix;
 
     if (entry.IsScalar()) {
       cam.device = entry.as<std::string>();
@@ -167,9 +196,37 @@ AppConfig load_config(const std::string& path, const Overrides& ov) {
     }
   }
 
+  // --- replay-skew injection (file sources; CLI-only, no YAML section) --------
+  if (!ov.skew_ms.empty())
+    cfg.replay.skew_ms = parse_double_list(ov.skew_ms, "--skew-ms");
+  if (!ov.rate.empty())
+    cfg.replay.rate = parse_double_list(ov.rate, "--rate");
+  if (ov.gap_every >= 0) cfg.replay.gap_every = ov.gap_every;
+  if (ov.ring >= 0) cfg.replay.ring = ov.ring;
+  if (ov.restamp >= 0) cfg.replay.restamp = (ov.restamp != 0);
+  const bool replay_knobs_used =
+      !cfg.replay.skew_ms.empty() || !cfg.replay.rate.empty() ||
+      cfg.replay.gap_every > 0 || cfg.replay.ring > 0 || cfg.replay.restamp;
+  if (replay_knobs_used && cfg.source_type != "file")
+    throw std::runtime_error(
+        "--skew-ms/--rate/--gap-every/--ring/--restamp only apply to file "
+        "replay (--source file).");
+  const std::size_t ncams = cfg.cameras.size();
+  if (cfg.replay.skew_ms.empty()) cfg.replay.skew_ms.assign(ncams, 0.0);
+  if (cfg.replay.rate.empty()) cfg.replay.rate.assign(ncams, 1.0);
+  if (cfg.replay.skew_ms.size() != ncams || cfg.replay.rate.size() != ncams)
+    throw std::runtime_error(
+        "--skew-ms / --rate need exactly one value per camera (" +
+        std::to_string(ncams) + " configured).");
+
   // --- pgie / tracker ---------------------------------------------------------
   cfg.pgie_config_file = resolve(
       project_root, get<std::string>(root["pgie"], "config_file", "config/pgie_config.txt"));
+  if (!ov.pgie_config.empty())
+    cfg.pgie_config_file = resolve(project_root, ov.pgie_config);
+  if (!fs::is_regular_file(cfg.pgie_config_file))
+    throw std::runtime_error("nvinfer config file not found: " +
+                             cfg.pgie_config_file);
   YAML::Node tr = root["tracker"];
   cfg.tracker.ll_lib_file = get<std::string>(tr, "ll_lib_file", cfg.tracker.ll_lib_file);
   cfg.tracker.ll_config_file = resolve(

@@ -284,6 +284,6 @@ well-known real papers, but the workflow's verification budget stopped at 25 cla
   Glimpse (SenSys'15), a DeepStream/`nvstreammux` systems reference, and a
   BEVFusion citation if you contrast fused vs independent per-camera detection.
 
-**Source URLs** for the fetched papers are recorded in the workflow output at
-`/tmp/claude-1000/-home-darklord01-Documents/b2a33feb-2534-465c-b19b-3ac6082e0e30/tasks/w3uilkxs7.output`
-(the `sources` array) — use them to pull DOIs quickly.
+*(errata 2026-07-07: the workflow-output file that recorded the fetched papers' source
+URLs lived in a since-cleared `/tmp` scratchpad and no longer exists — pull the DOIs
+directly via DBLP / IEEE Xplore instead.)*

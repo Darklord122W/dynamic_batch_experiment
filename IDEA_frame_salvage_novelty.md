@@ -178,4 +178,6 @@ DaDe VISIGRAPP 2023; Chanakya NeurIPS 2023; ROMA arXiv:2210.16083; Liu imprecise
 1991; Yao arXiv:2011.01112.
 ⚠️ confirm exact venue: LASP (2504.19115, 2025), ROMA (WACV'23?), Yao (RTCSA 2020), DaDe.
 
-Full source URLs: `/tmp/claude-1000/-home-darklord01-Documents/b2a33feb-2534-465c-b19b-3ac6082e0e30/tasks/w4trkk7s1.output` (`sources` array).
+Full source URLs: *(errata 2026-07-07: the workflow-output file that held the `sources`
+array lived in a since-cleared `/tmp` scratchpad and no longer exists — the URLs must be
+re-fetched during pre-print verification.)*

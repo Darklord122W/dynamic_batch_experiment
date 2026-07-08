@@ -53,6 +53,9 @@ python3 scripts/record_replay_clips.py --duration 40 --out-dir experiments/clips
 `--source file` also flips `nvstreammux live-source=0` so the sink paces playback
 to real time (not rushed). Absolute latencies under replay differ from live
 (extra H.264 decode), but **relative** A/B comparisons are valid — that's the point.
+(errata 2026-07-07: the ~3× replay inflation quoted below is specific to the
+Python/legacy-mux app — the C++ new-mux app replays at p50 28 ms with the
+min-fps=120 INI, no such inflation; see `results/param_sweep_locked/`.)
 
 ## The experiments
 
@@ -102,7 +105,10 @@ triggers an early push. `nvinfer` batch-size is irrelevant here (it's the engine
 max; the dynamic engine runs any smaller batch natively, and it's NULL/READY-only
 anyway). A genuine early-push-on-skip would need the **new nvstreammux**
 (`USE_NEW_NVSTREAMMUX=yes`, deadline-based) or **dynamically releasing the skipped
-cameras' request pads** — both larger changes, not yet done.
+cameras' request pads**. (update 2026-07-07: the new-mux route **is now done** —
+the C++ port `cpp/multicam_rt` runs the new nvstreammux and pushes partial
+batches at ~2.4 ms wait with the `overall-min-fps=120` INI; see
+[`results/param_sweep_locked/`](results/param_sweep_locked/README.md).)
 **This is exactly why you measure before optimizing** — the intuitive fix was a
 regression.
 
@@ -147,6 +153,9 @@ cuts GPU compute** (power/thermal) at a **−50% real-throughput cost**.
   compute-vs-coverage/reaction trade.
 - **sync-inputs / batch-size / adaptive-timeout-alone: no net improvement.**
 - Replay inflates absolutes ~3× vs live — treat these as *relative*.
+  (errata 2026-07-07: that inflation is a Python/legacy-mux property, not
+  replay's — the C++ new-mux app shows replay p50 28 ms, no such inflation;
+  see `results/param_sweep_locked/`.)
 
 Graphs in `results/big/`: `summary_bars.png` (per-metric bars), `tradeoff.png`
 (the Pareto view — the clearest "is it better?"), `timelines.png` (over time),
@@ -168,7 +177,13 @@ The trustworthy metrics are **`compute_ms`** (GPU work) and **`e2e`/`wait`**
 experiments/
 ├── exp_scheduled.yaml   # example: scheduled camera-skip + (CLI) adaptive timeout
 ├── exp_skip_big.yaml    # skip-and-stay config used by big_experiment.py
+├── exp_skipstay.yaml    # skip-and-stay variant: drops to cams [0,1] at t=2 s, never restores
 ├── exp_sync_big.yaml    # sync-inputs config used by big_experiment.py
 ├── clips/               # recorded per-camera replay clips (cam0..3.mp4)
+├── myclipsForEXP/       # alternate recorded clip set (cam0..3.mp4), same format as clips/
 └── results/big/         # campaign CSVs, summary.txt, summary_bars.png, timelines.png
 ```
+Other result dirs under `results/`: `sync_grid/`, `sync_sweep/` (sync-inputs
+window studies) and `timeout_sweep*/` (E1 timeout sweeps), plus the baseline
+campaigns `baseline_cpp_vs_py*/` and `param_sweep_locked/`.
+- `results/campaign_2026-07-07_ptsfix/` — the jpegparse PTS-fix campaign: fix verification, baseline_pinned re-do, replay_skewed reproduction, sync-after-fix, and the C++ engine x sync push-deadline sweeps (REPORT.md = command log)

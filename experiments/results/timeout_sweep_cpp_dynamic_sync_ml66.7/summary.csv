@@ -1,0 +1,2 @@
+push_ms,mean_n_in_batch,frac_full,batches_s,frames_s,e2e_mean_ms,e2e_p99_ms,compute_mean_ms,frac_0,frac_1,frac_2,frac_3,frac_4,arrivals,processed,coverage,dets_total,dets_per_frame,dets_per_frame_cam0,dets_per_frame_cam1,dets_per_frame_cam2,dets_per_frame_cam3,distinct_tracks,match_frames,det_agree_pct,det_absdiff_mean
+33.3,3.859,0.869,30.58,118.02,100.28,144.71,31.24,0.0000,0.0000,0.0100,0.1214,0.8687,5292,5270,0.9958,4846,1.038,0.826,2.181,0.730,0.409,62,,,

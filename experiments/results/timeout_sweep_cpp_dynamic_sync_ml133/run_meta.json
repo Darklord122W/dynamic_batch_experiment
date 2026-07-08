@@ -1,0 +1,22 @@
+{
+  "config": "config/camera_params.yaml",
+  "pgie": "config/pgie_config.txt",
+  "tag": "dynamic batch",
+  "ms": [
+    33.3
+  ],
+  "ref_ms": 100,
+  "num_cams": 4,
+  "duration": 45.0,
+  "warmup": 5.0,
+  "out": "experiments/results/timeout_sweep_cpp_dynamic_sync_ml133",
+  "replay_dir": "experiments/clips",
+  "skew_ms": "0,1134.8,1702.1,567.2",
+  "rate": "0.96063,0.96099,0.96087,0.96128",
+  "gap_every": 44,
+  "ring": 4,
+  "restamp": false,
+  "mux_config": null,
+  "sync": true,
+  "max_latency_ms": 133.0
+}

@@ -1,0 +1,34 @@
+{
+  "skew_ms": "0,1134.8,1702.1,567.2",
+  "rate": "0.96063,0.96099,0.96087,0.96128",
+  "gap_every": 44,
+  "ring": 4,
+  "num_cams": 4,
+  "replay_dir": "clips",
+  "duration": 32.0,
+  "ml": [
+    2,
+    5,
+    8.33,
+    16,
+    33.333,
+    66.7,
+    133,
+    2000
+  ],
+  "timeout_us": 33333,
+  "grid": true,
+  "grid_ml": [
+    16,
+    33.333,
+    66.7
+  ],
+  "grid_timeout_us": [
+    8333,
+    16667,
+    33333,
+    66667
+  ],
+  "out": "results/sync_replay_sweep",
+  "force": false
+}

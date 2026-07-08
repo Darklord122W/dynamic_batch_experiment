@@ -73,6 +73,15 @@ pad the batch to 4 (padding would keep compute ~flat at the 4-cam cost).
 
 Same behavior when the partial batch is caused by **sync-inputs** rather than skip.
 
+> **Note (errata 2026-07-07):** the batch sizes capped at `{1: 28, 2: 138}` —
+> never 3 with 3 live cameras — because `jpegparse` re-stamps live PTS onto
+> per-camera 33.33 ms grids offset ~1.05–1.5 s by USB startup stagger, so under
+> `sync-inputs=1` frames from different cameras rarely look contemporaneous
+> (root cause + fix in `cpp/experiments/frame_timing/`). The conclusion here is
+> unaffected — nvinfer still processed every partial batch without error. With
+> the PTS-restore fix (on by default in `cpp/multicam_rt`), sync-complete
+> batches of 3–4 are expected instead.
+
 ---
 
 ## Findings

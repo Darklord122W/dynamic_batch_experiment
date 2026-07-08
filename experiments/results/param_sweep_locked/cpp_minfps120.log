@@ -1,0 +1,38 @@
+[main] USE_NEW_NVSTREAMMUX=yes
+[main] 4 camera(s) [file] 640x480@30 (mjpeg); NEW nvstreammux sync-inputs=OFF timeout=33333us log=none; metrics -> experiments/results/param_sweep_locked/cpp_minfps120.csv.
+max_fps_dur 8.33333e+06 min_fps_dur 2e+08
+Opening in BLOCKING MODE 
+Opening in BLOCKING MODE 
+Opening in BLOCKING MODE 
+Opening in BLOCKING MODE 
+gstnvtracker: Loading low-level lib at /opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so
+[NvMultiObjectTracker] Initialized
+Setting min object dimensions as 16x16 instead of 1x1 to support VIC compute mode.
+0:00:00.397868383 [34m14763[00m 0xaaaaf5d28d90 [36mINFO   [00m [00m             nvinfer gstnvinfer.cpp:684:gst_nvinfer_logger:<primary-inference>[00m NvDsInferContext[UID 1]: Info from NvDsInferContextImpl::deserializeEngineAndBackend() <nvdsinfer_context_impl.cpp:2092> [UID = 1]: deserialized trt engine from :/home/darklord01/Documents/deepstream_batch/multicam_perception_rt/models/model_b4_gpu0_fp16.engine
+0:00:00.397997182 [34m14763[00m 0xaaaaf5d28d90 [36mINFO   [00m [00m             nvinfer gstnvinfer.cpp:684:gst_nvinfer_logger:<primary-inference>[00m NvDsInferContext[UID 1]: Info from NvDsInferContextImpl::generateBackendContext() <nvdsinfer_context_impl.cpp:2195> [UID = 1]: Use deserialized engine model: /home/darklord01/Documents/deepstream_batch/multicam_perception_rt/models/model_b4_gpu0_fp16.engine
+0:00:00.406953017 [34m14763[00m 0xaaaaf5d28d90 [36mINFO   [00m [00m             nvinfer gstnvinfer_impl.cpp:343:notifyLoadModelStatus:<primary-inference>[00m [UID 1]: Load new model:/home/darklord01/Documents/deepstream_batch/multicam_perception_rt/config/pgie_config.txt sucessfully
+[main] Running. First launch may build the TensorRT engine (several minutes). Press Ctrl-C to stop.
+NvMMLiteOpen : Block : BlockType = 261 
+NvMMLiteBlockCreate : Block : BlockType = 261 
+NvMMLiteOpen : Block : BlockType = 261 
+NvMMLiteOpen : Block : BlockType = 261 
+NvMMLiteOpen : Block : BlockType = 261 
+NvMMLiteBlockCreate : Block : BlockType = 261 
+NvMMLiteBlockCreate : Block : BlockType = 261 
+NvMMLiteBlockCreate : Block : BlockType = 261 
+0:00:00.514120322 [34m14763[00m 0xaaab00947f00 [33;01mWARN   [00m [00m      nvvideoconvert gstnvvideoconvert.c:2101:gst_nvvideoconvert_fixate_caps:<cam-conv-2>[00m nvbuf-memory-type property is set based on SRC caps. Property config setting (if any) is overridden!!
+0:00:00.514134658 [34m14763[00m 0xffff28006f00 [33;01mWARN   [00m [00m      nvvideoconvert gstnvvideoconvert.c:2101:gst_nvvideoconvert_fixate_caps:<cam-conv-3>[00m nvbuf-memory-type property is set based on SRC caps. Property config setting (if any) is overridden!!
+0:00:00.514143394 [34m14763[00m 0xaaab00947cc0 [33;01mWARN   [00m [00m      nvvideoconvert gstnvvideoconvert.c:2101:gst_nvvideoconvert_fixate_caps:<cam-conv-1>[00m nvbuf-memory-type property is set based on SRC caps. Property config setting (if any) is overridden!!
+0:00:00.514190465 [34m14763[00m 0xaaab00947f00 [33;01mWARN   [00m [00m      nvvideoconvert gstnvvideoconvert.c:2106:gst_nvvideoconvert_fixate_caps:<cam-conv-2>[00m gpu-id property is set based on SRC caps. Property config setting (if any) is overridden!!
+0:00:00.514239265 [34m14763[00m 0xffff28006f00 [33;01mWARN   [00m [00m      nvvideoconvert gstnvvideoconvert.c:2106:gst_nvvideoconvert_fixate_caps:<cam-conv-3>[00m gpu-id property is set based on SRC caps. Property config setting (if any) is overridden!!
+0:00:00.514269952 [34m14763[00m 0xaaab00947cc0 [33;01mWARN   [00m [00m      nvvideoconvert gstnvvideoconvert.c:2106:gst_nvvideoconvert_fixate_caps:<cam-conv-1>[00m gpu-id property is set based on SRC caps. Property config setting (if any) is overridden!!
+[main] duration 25.0s elapsed — stopping.
+[main] End-of-stream — shutting down.
+WARNING: [TRT]: Using an engine plan file across different models of devices is not recommended and is likely to affect performance or even cause errors.
+INFO: [FullDims Engine Info]: layers num: 2
+0   INPUT  kFLOAT input           3x640x640       min: 1x3x640x640     opt: 4x3x640x640     Max: 4x3x640x640     
+1   OUTPUT kFLOAT output          8400x6          min: 0               opt: 0               Max: 0               
+
+max_fps_dur 4.16667e+06 min_fps_dur 8.33333e+06
+[NvMultiObjectTracker] De-initialized
+[metrics] wrote 912 batches to experiments/results/param_sweep_locked/cpp_minfps120.csv (35.6 batches/s over 25.6s; 28 distinct tracks; sync off; processed 3028 of 3028 arrived frames; mux dropped-signal count 0).

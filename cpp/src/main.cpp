@@ -65,9 +65,31 @@ void usage(const char* prog) {
 "  --timeout-us N       batched-push-timeout in microseconds (default 33333)\n"
 "  --mux-config PATH    new-mux INI (default: config/mux_config.txt; 'none' to\n"
 "                       run on the mux's built-in defaults)\n"
+"  --pgie-config PATH   nvinfer config override (engine A/B testing, e.g.\n"
+"                       config/pgie_config.txt = dynamic-batch engine,\n"
+"                       config/_pgie_static.txt = fixed batch-4 engine)\n"
+"  --no-pts-fix         DISABLE the jpegparse PTS-restore fix (live MJPG\n"
+"                       sources). Default ON: true kernel capture stamps are\n"
+"                       restored onto jpegparse's output, instead of the\n"
+"                       synthetic per-camera 33.33 ms grid that carries a\n"
+"                       constant 1.05-1.47 s cross-camera offset\n"
 "  --source v4l2|file   live cameras (default) or deterministic file replay\n"
 "  --replay-dir DIR     per-camera replay clips cam0.mp4.. (default:\n"
 "                       experiments/clips) for --source file\n"
+"\n"
+"replay-skew injection (--source file; simulates the live rig's timing on\n"
+"recorded clips — validated in cpp/experiments/frame_timing/REPLAY_SKEW.md):\n"
+"  --skew-ms a,b,..     per-camera start delay in ms (startup stagger)\n"
+"  --rate r0,r1,..      per-camera PTS rate factor; 0.9608 turns a 30 fps\n"
+"                       clip into the C920's true 32.026 ms cadence; small\n"
+"                       per-camera differences simulate crystal drift\n"
+"  --gap-every N        drop 2 consecutive frames every N frames per camera\n"
+"                       (kernel capture gaps; measured live: ~70)\n"
+"  --ring N             bounded drop-newest queue after the pacer (v4l2\n"
+"                       kernel-ring stand-in; live: 4). 0 = off (default)\n"
+"  --restamp            emulate the UNFIXED jpegparse: rewrite PTS onto the\n"
+"                       synthetic per-camera grid (default: off = the mux\n"
+"                       sees true pacing timestamps, like the fixed app)\n"
 "  --display            live tiled window with boxes + labels + track IDs\n"
 "  --record PATH        also record the annotated, tiled view to an H.264 MP4\n"
 "  --log MODE           console output: json (default) | human | none\n"
@@ -142,6 +164,24 @@ Args parse_args(int argc, char** argv) {
       a.ov.source = need_value(argc, argv, i, arg.c_str());
     } else if (arg == "--replay-dir") {
       a.ov.replay_dir = need_value(argc, argv, i, arg.c_str());
+    } else if (arg == "--pgie-config") {
+      a.ov.pgie_config = need_value(argc, argv, i, arg.c_str());
+    } else if (arg == "--pts-fix") {
+      a.ov.pts_fix = 1;
+    } else if (arg == "--no-pts-fix") {
+      a.ov.pts_fix = 0;
+    } else if (arg == "--skew-ms") {
+      a.ov.skew_ms = need_value(argc, argv, i, arg.c_str());
+    } else if (arg == "--rate") {
+      a.ov.rate = need_value(argc, argv, i, arg.c_str());
+    } else if (arg == "--gap-every") {
+      a.ov.gap_every = static_cast<int>(need_int(argc, argv, i, arg.c_str()));
+    } else if (arg == "--ring") {
+      a.ov.ring = static_cast<int>(need_int(argc, argv, i, arg.c_str()));
+    } else if (arg == "--restamp") {
+      a.ov.restamp = 1;
+    } else if (arg == "--no-restamp") {
+      a.ov.restamp = 0;
     } else if (arg == "--display") {
       a.display = true;
     } else if (arg == "--record") {
@@ -298,6 +338,28 @@ int run(const Args& args) {
       (cfg.mux.sync_inputs ? "ON" : "OFF") + " timeout=" +
       std::to_string(cfg.mux.batched_push_timeout_us) + "us";
   if (cfg.mux.config_file.empty()) banner += " mux-config=none";
+  if (cfg.source_type == "v4l2" && cfg.cameras[0].format == "mjpeg")
+    banner += std::string("; pts-fix=") +
+              (cfg.cameras[0].pts_fix ? "ON" : "off");
+  if (cfg.source_type == "file") {
+    bool skewed = cfg.replay.gap_every > 0 || cfg.replay.ring > 0 ||
+                  cfg.replay.restamp;
+    for (std::size_t i = 0; i < cfg.cameras.size(); ++i)
+      if (cfg.replay.skew_ms[i] != 0.0 || cfg.replay.rate[i] != 1.0)
+        skewed = true;
+    if (skewed) {
+      banner += "; replay-skew [skew-ms=";
+      for (std::size_t i = 0; i < cfg.replay.skew_ms.size(); ++i)
+        banner += (i ? "," : "") + std::to_string(cfg.replay.skew_ms[i]);
+      banner += " rate=";
+      for (std::size_t i = 0; i < cfg.replay.rate.size(); ++i)
+        banner += (i ? "," : "") + std::to_string(cfg.replay.rate[i]);
+      banner += " gap-every=" + std::to_string(cfg.replay.gap_every) +
+                " ring=" + std::to_string(cfg.replay.ring) +
+                " restamp=" + (cfg.replay.restamp ? "on" : "off") + "]";
+    }
+  }
+  banner += "; pgie=" + cfg.pgie_config_file;
   banner += " log=" + log_mode;
   if (display) banner += "; display window";
   if (!args.record_path.empty()) banner += "; recording -> " + args.record_path;

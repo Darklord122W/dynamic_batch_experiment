@@ -1,0 +1,20 @@
+{
+  "tool": "frame_timing_probe",
+  "devices": ["/dev/video0", "/dev/video2", "/dev/video4", "/dev/video6"],
+  "width": 640, "height": 480, "fps": 30,
+  "decoder": "nvjpegdec",
+  "sync_inputs": true,
+  "max_latency_ns": 33333000,
+  "batched_push_timeout_us": 33333,
+  "mux_config": "",
+  "extra_controls": "exposure_dynamic_framerate=0",
+  "pts_fix": true,
+  "replay_dir": "",
+  "duration_s": 120.000,
+  "pipeline_clock_type": "GstSystemClock",
+  "base_time_ns": 4449410603063,
+  "real_minus_mono_ns_start": 1783471742823379904, "real_minus_mono_bracket_ns_start": 256,
+  "real_minus_mono_ns_end": 1783471742823379904, "real_minus_mono_bracket_ns_end": 256,
+  "run_start_real_ns": 1783476192228071849,
+  "run_end_real_ns": 1783476312477741030
+}

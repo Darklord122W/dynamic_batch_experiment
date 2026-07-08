@@ -628,17 +628,37 @@ def fig11_compare(run_a, name_a, run_b, name_b, out, period_ns):
 # ----------------------------------------------------------------------------
 def write_summary(run, out, period_ns, lat, paired_steady, sp, approx):
     cams, meta = run["cams"], run["meta"]
+    is_replay = bool(meta.get("replay_dir"))
+    if is_replay:
+        src_lines = [
+            f"- replay: {meta['replay_dir']}/cam*.mp4 (H.264 → nvv4l2decoder, "
+            f"paced by identity sync=true)",
+            f"- injected: skew-ms={meta.get('skew_ms')}; "
+            f"rate={meta.get('rate')}; gap-every={meta.get('gap_every')}; "
+            f"ring={meta.get('ring')}; "
+            f"restamp={'ON (jpegparse emulation)' if meta.get('restamp') else 'OFF (true timestamps)'}",
+            f"- mux: sync-inputs={'ON' if meta['sync_inputs'] else 'OFF'}; "
+            f"batched-push-timeout={meta['batched_push_timeout_us']} µs"
+            + (f"; max-latency={meta['max_latency_ns']/1e6:.0f} ms"
+               if meta['sync_inputs'] else ""),
+        ]
+    else:
+        src_lines = [
+            f"- devices: {meta['devices']}",
+            f"- mode: {meta['width']}x{meta['height']}@{meta['fps']} MJPG → "
+            f"{meta['decoder']}; sync-inputs="
+            f"{'ON' if meta['sync_inputs'] else 'OFF'}; "
+            f"batched-push-timeout={meta['batched_push_timeout_us']} µs"
+            + (f"; max-latency={meta['max_latency_ns']/1e6:.0f} ms"
+               if meta['sync_inputs'] else "")
+            + (f"; jpegparse pts-fix={'ON' if meta.get('pts_fix') else 'off'}"),
+            f"- extra v4l2 controls: "
+            f"{meta.get('extra_controls','') or '(none)'}",
+        ]
     lines = ["# frame_timing_probe — run summary", "",
-             f"- devices: {meta['devices']}",
-             f"- mode: {meta['width']}x{meta['height']}@{meta['fps']} MJPG → "
-             f"{meta['decoder']}; sync-inputs="
-             f"{'ON' if meta['sync_inputs'] else 'OFF'}; "
-             f"batched-push-timeout={meta['batched_push_timeout_us']} µs"
-             + (f"; max-latency={meta['max_latency_ns']/1e6:.0f} ms"
-                if meta['sync_inputs'] else ""),
-             f"- extra v4l2 controls: "
-             f"{meta.get('extra_controls','') or '(none)'}",
-             f"- duration: {meta['duration_s']} s "
+             *src_lines,
+             f"- duration: requested {meta['duration_s']} s, captured "
+             f"{run['span']:.1f} s "
              f"(steady-state window {run['steady'][0]:.1f}–"
              f"{run['steady'][1]:.1f} s used for all stats)",
              f"- pipeline clock: {meta['pipeline_clock_type']} "
@@ -653,7 +673,10 @@ def write_summary(run, out, period_ns, lat, paired_steady, sp, approx):
         g = steady(run["cap"][run["cap"].cam == c], "cap_t_s", run) \
             .sort_values("cap_mono_ns")
         dt = g.cap_mono_ns.diff().dropna() / MS
-        gaps = (g.seq.diff().dropna() > 1).sum()
+        # In replay mode there are no V4L2 sequence numbers (seq = -1), so a
+        # kernel-gap count would read as a meaningless 0 — report n/a.
+        gaps = ("n/a (replay)" if is_replay
+                else str(int((g.seq.diff().dropna() > 1).sum())))
         span = (g.cap_mono_ns.max() - g.cap_mono_ns.min()) / NS
         pl = lat[paired_steady.cam == c]
         lines.append(f"| {c} | {len(g)} | {len(g)/span:.1f} | "

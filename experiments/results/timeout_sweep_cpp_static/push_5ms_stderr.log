@@ -1,0 +1,17 @@
+[main] USE_NEW_NVSTREAMMUX=yes
+[main] 4 camera(s) [file] 640x480@30 (mjpeg); NEW nvstreammux sync-inputs=OFF timeout=5000us; replay-skew [skew-ms=0.000000,1134.800000,1702.100000,567.200000 rate=0.960630,0.960990,0.960870,0.961280 gap-every=44 ring=4 restamp=off]; pgie=/home/darklord01/Documents/deepstream_batch/multicam_perception_rt/config/_pgie_static.txt log=json; metrics -> /home/darklord01/Documents/deepstream_batch/multicam_perception_rt/experiments/results/timeout_sweep_cpp_static/push_5ms.csv.
+0:00:00.345004516 [35m19924[00m 0xaaaaf3fc2920 [36mINFO   [00m [00m             nvinfer gstnvinfer.cpp:684:gst_nvinfer_logger:<primary-inference>[00m NvDsInferContext[UID 1]: Info from NvDsInferContextImpl::deserializeEngineAndBackend() <nvdsinfer_context_impl.cpp:2092> [UID = 1]: deserialized trt engine from :/home/darklord01/Documents/deepstream_batch/multicam_perception_rt/models/model_static_b4_gpu0_fp16.engine
+0:00:00.345114460 [35m19924[00m 0xaaaaf3fc2920 [36mINFO   [00m [00m             nvinfer gstnvinfer.cpp:684:gst_nvinfer_logger:<primary-inference>[00m NvDsInferContext[UID 1]: Info from NvDsInferContextImpl::generateBackendContext() <nvdsinfer_context_impl.cpp:2195> [UID = 1]: Use deserialized engine model: /home/darklord01/Documents/deepstream_batch/multicam_perception_rt/models/model_static_b4_gpu0_fp16.engine
+0:00:00.396255768 [35m19924[00m 0xaaaaf3fc2920 [36mINFO   [00m [00m             nvinfer gstnvinfer_impl.cpp:343:notifyLoadModelStatus:<primary-inference>[00m [UID 1]: Load new model:/home/darklord01/Documents/deepstream_batch/multicam_perception_rt/config/_pgie_static.txt sucessfully
+[main] Running. First launch may build the TensorRT engine (several minutes). Press Ctrl-C to stop.
+NvMMLiteOpen : Block : BlockType = 261 
+NvMMLiteOpen : Block : BlockType = 261 
+NvMMLiteOpen : Block : BlockType = 261 
+NvMMLiteBlockCreate : Block : BlockType = 261 
+NvMMLiteOpen : Block : BlockType = 261 
+NvMMLiteBlockCreate : Block : BlockType = 261 
+NvMMLiteBlockCreate : Block : BlockType = 261 
+NvMMLiteBlockCreate : Block : BlockType = 261 
+[main] duration 45.0s elapsed — stopping.
+[main] End-of-stream — shutting down.
+[metrics] wrote 1662 batches to /home/darklord01/Documents/deepstream_batch/multicam_perception_rt/experiments/results/timeout_sweep_cpp_static/push_5ms.csv (36.0 batches/s over 46.1s; 63 distinct tracks; sync off; processed 5169 of 5169 arrived frames; mux dropped-signal count 0).

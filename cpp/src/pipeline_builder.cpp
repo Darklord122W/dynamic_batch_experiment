@@ -1,7 +1,11 @@
 #include "pipeline_builder.hpp"
 
+#include <cinttypes>
 #include <cmath>
+#include <cstdio>
+#include <deque>
 #include <filesystem>
+#include <mutex>
 #include <stdexcept>
 #include <vector>
 
@@ -52,11 +56,187 @@ void on_demux_pad_added(GstElement*, GstPad* pad, gpointer user_data) {
 }
 
 // --------------------------------------------------------------------------
+// The jpegparse PTS-restore fix
+// --------------------------------------------------------------------------
+/* jpegparse (GstBaseParse, GStreamer 1.20 / DS 7.1) re-stamps every output
+ * buffer onto an ideal `first_pts + n/framerate` grid anchored at that
+ * camera's own first frame. The kernel capture stamp v4l2src put on the
+ * buffer — the only true capture time a USB camera provides — is destroyed,
+ * and the four cameras' PTS disagree downstream by a constant 1.05–1.47 s
+ * (the startup stagger; measured, see cpp/experiments/frame_timing/). The
+ * grids also drift ~+0.65 %/s against real time (grid step 33.33 ms vs
+ * ~29.8 fps delivered), so under sync-inputs every frame's apparent age
+ * creeps toward the LATE cut and the pipeline decays progressively.
+ *
+ * The fix: v4l2src emits exactly one complete JPEG per buffer, so jpegparse
+ * is 1-in-1-out here. A probe on its sink pad queues each true input PTS; a
+ * probe on its src pad pops it and overwrites the synthetic output PTS.
+ * Downstream elements (nvjpegdec, nvvideoconvert, nvstreammux) pass PTS
+ * through bit-exact, so NvDsFrameMeta.buf_pts becomes the true capture
+ * stamp. If jpegparse ever swallowed a corrupt frame the FIFO would drift by
+ * one period; the depth guard below caps that and reports it.
+ *
+ * Measured impact (120 s live A/B, 2026-07-07, campaign_2026-07-07_ptsfix):
+ *   sync-inputs=1 @ max-latency 33 ms:  14.7 % of frames kept, 40.4 % full
+ *   batches (fix off)  ->  99.9 % kept, 100.0 % full batches, true in-batch
+ *   spread p50 2.1 ms (fix on) — and the sync-off standing-queue staleness
+ *   ladder (32/172/239/241 ms) flushes to uniform. Sync-off behaviour is
+ *   bit-identical with the fix on (verified batch-for-batch), and the cost
+ *   is two probe callbacks per frame: one deque push + one pop under an
+ *   uncontended per-camera mutex, no extra buffering, no copies. */
+struct PtsRestoreCtx {
+  std::mutex mu;             // sink and src probes fire on one streaming
+                             // thread today; the mutex keeps this correct if
+                             // that ever changes
+  std::deque<GstClockTime> fifo;
+  int cam = 0;
+  long warned = 0;
+};
+
+GstPadProbeReturn pts_fix_sink_probe(GstPad*, GstPadProbeInfo* info,
+                                     gpointer user_data) {
+  auto* ctx = static_cast<PtsRestoreCtx*>(user_data);
+  GstBuffer* buf = GST_PAD_PROBE_INFO_BUFFER(info);
+  if (buf == nullptr || !GST_BUFFER_PTS_IS_VALID(buf)) return GST_PAD_PROBE_OK;
+  std::lock_guard<std::mutex> lock(ctx->mu);
+  ctx->fifo.push_back(GST_BUFFER_PTS(buf));
+  /* 1-in-1-out means depth ~1. Depth growth = jpegparse withheld a frame;
+   * drop the stale head so the restore can never lag more than a few frames. */
+  if (ctx->fifo.size() > 4) {
+    ctx->fifo.pop_front();
+    if (ctx->warned++ == 0)
+      std::fprintf(stderr,
+                   "[pts-fix] cam %d: jpegparse buffered more than 4 frames — "
+                   "restored PTS may be off by one period.\n", ctx->cam);
+  }
+  return GST_PAD_PROBE_OK;
+}
+
+GstPadProbeReturn pts_fix_src_probe(GstPad*, GstPadProbeInfo* info,
+                                    gpointer user_data) {
+  auto* ctx = static_cast<PtsRestoreCtx*>(user_data);
+  GstBuffer* buf = GST_PAD_PROBE_INFO_BUFFER(info);
+  if (buf == nullptr) return GST_PAD_PROBE_OK;
+  std::lock_guard<std::mutex> lock(ctx->mu);
+  if (ctx->fifo.empty()) return GST_PAD_PROBE_OK;  // nothing recorded: leave as-is
+  buf = gst_buffer_make_writable(buf);
+  GST_BUFFER_PTS(buf) = ctx->fifo.front();
+  ctx->fifo.pop_front();
+  info->data = buf;
+  return GST_PAD_PROBE_OK;
+}
+
+/* Attach the two restore probes around a jpegparse instance. The ctx is
+ * stored (type-erased) in *ctxs and must outlive the streaming threads. */
+void attach_pts_fix(GstElement* jparse, int index,
+                    std::vector<std::shared_ptr<void>>* ctxs) {
+  auto ctx = std::shared_ptr<PtsRestoreCtx>(new PtsRestoreCtx);
+  ctx->cam = index;
+  GstPad* sink = gst_element_get_static_pad(jparse, "sink");
+  GstPad* src = gst_element_get_static_pad(jparse, "src");
+  gst_pad_add_probe(sink, GST_PAD_PROBE_TYPE_BUFFER, pts_fix_sink_probe,
+                    ctx.get(), nullptr);
+  gst_pad_add_probe(src, GST_PAD_PROBE_TYPE_BUFFER, pts_fix_src_probe,
+                    ctx.get(), nullptr);
+  gst_object_unref(sink);
+  gst_object_unref(src);
+  ctxs->push_back(std::move(ctx));
+}
+
+// --------------------------------------------------------------------------
+// Replay-skew injection (file sources) — ported from
+// cpp/experiments/frame_timing/frame_timing_probe.cpp, where it was validated
+// against the live baseline_pinned run (REPLAY_SKEW.md §7). A live camera
+// carries two timelines; the replay keeps them separate:
+//   true timeline   — when frames exist/arrive (cadence, stagger, gaps, ring
+//                     drops). Built by the skew probe (PTS' = PTS*rate + skew,
+//                     gap dropping) + identity sync=true pacing + the leaky
+//                     ring queue. This paces buffers into the mux.
+//   synthetic timeline — what an UNFIXED jpegparse would hand the mux: the
+//                     restamp probe rewrites post-ring PTS onto an ideal
+//                     first_pts + n*33.333 ms grid counting only survivors.
+//                     Off by default: without it the mux sees the true
+//                     timeline, i.e. the behaviour of the pts_fix pipeline.
+//
+// Parameter trap (restamp + sync experiments only): the emulated grids drift
+// against real time at the rate set by the DELIVERED frame rate vs the
+// 33.333 ms grid step. gap_every must make the delivered rate match live
+// (~29.8 fps -> gap-every 44 for the 2026-07-07 reference); the naive
+// modal-cadence derivation (gap-every 70/275) flips the drift sign, frames
+// look future-stamped, nothing is ever LATE, and sync-on trivially succeeds
+// — a pure artifact. Measured and documented in REPLAY_SKEW.md §9.
+// --------------------------------------------------------------------------
+struct ReplayFrontCtx {
+  int cam = 0;
+  double rate = 1.0;
+  int64_t skew_ns = 0;
+  int gap_every = 0;      // 0 = no injected gaps
+  int gap_phase = 0;      // per-camera phase so cameras don't gap together
+  int64_t in_idx = 0;
+  int64_t out_idx = 0;
+  int64_t first_syn_pts = -1;
+};
+
+GstPadProbeReturn replay_skew_probe(GstPad*, GstPadProbeInfo* info,
+                                    gpointer user_data) {
+  auto* ctx = static_cast<ReplayFrontCtx*>(user_data);
+
+  /* qtdemux bounds the segment at clip duration; skewed PTS would fall
+   * outside it and break pacing near EOS — lift the bound. */
+  if (info->type & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) {
+    GstEvent* ev = GST_PAD_PROBE_INFO_EVENT(info);
+    if (ev != nullptr && GST_EVENT_TYPE(ev) == GST_EVENT_SEGMENT) {
+      const GstSegment* seg = nullptr;
+      gst_event_parse_segment(ev, &seg);
+      GstSegment s = *seg;
+      s.stop = GST_CLOCK_TIME_NONE;
+      info->data = gst_event_new_segment(&s);
+      gst_event_unref(ev);
+    }
+    return GST_PAD_PROBE_OK;
+  }
+
+  GstBuffer* buf = GST_PAD_PROBE_INFO_BUFFER(info);
+  if (buf == nullptr || !GST_BUFFER_PTS_IS_VALID(buf)) return GST_PAD_PROBE_OK;
+
+  const int64_t idx = ctx->in_idx++;
+  if (ctx->gap_every > 0 &&
+      (idx + ctx->gap_phase) % ctx->gap_every < 2)  // 2-frame gap, like live
+    return GST_PAD_PROBE_DROP;
+
+  buf = gst_buffer_make_writable(buf);
+  const auto pts = static_cast<int64_t>(GST_BUFFER_PTS(buf));
+  GST_BUFFER_PTS(buf) = static_cast<GstClockTime>(
+      static_cast<int64_t>(pts * ctx->rate) + ctx->skew_ns);
+  info->data = buf;
+  return GST_PAD_PROBE_OK;
+}
+
+GstPadProbeReturn replay_restamp_probe(GstPad*, GstPadProbeInfo* info,
+                                       gpointer user_data) {
+  auto* ctx = static_cast<ReplayFrontCtx*>(user_data);
+  GstBuffer* buf = GST_PAD_PROBE_INFO_BUFFER(info);
+  if (buf == nullptr || !GST_BUFFER_PTS_IS_VALID(buf)) return GST_PAD_PROBE_OK;
+
+  buf = gst_buffer_make_writable(buf);
+  if (ctx->first_syn_pts < 0)
+    ctx->first_syn_pts = static_cast<int64_t>(GST_BUFFER_PTS(buf));
+  /* jpegparse's grid: anchor at the first output PTS, step by the NOMINAL
+   * frame duration (33.333 ms for 30/1), count OUTPUT (surviving) frames. */
+  GST_BUFFER_PTS(buf) = static_cast<GstClockTime>(
+      ctx->first_syn_pts + ctx->out_idx * INT64_C(33333333));
+  ctx->out_idx++;
+  info->data = buf;
+  return GST_PAD_PROBE_OK;
+}
+
+// --------------------------------------------------------------------------
 // Per-camera source bin
 // --------------------------------------------------------------------------
 /* Live-capture front: v4l2src -> caps -> (JPEG decode | raw convert). Returns
  * the last element, to be linked into the shared NVMM tail. */
-GstElement* build_v4l2_front(GstBin* nbin, int index, const CameraCfg& cam) {
+GstElement* build_v4l2_front(GstBin* nbin, int index, const CameraCfg& cam,
+                             std::vector<std::shared_ptr<void>>* ctxs) {
   const std::string idx = std::to_string(index);
 
   GstElement* src = make_elem("v4l2src", "cam-src-" + idx);
@@ -80,6 +260,9 @@ GstElement* build_v4l2_front(GstBin* nbin, int index, const CameraCfg& cam) {
       gst_bin_add_many(nbin, jparse, jdec, nullptr);
       elements.push_back(jparse);
       elements.push_back(jdec);
+      /* Restore the true kernel capture PTS that jpegparse would otherwise
+       * replace with its synthetic per-camera grid (see attach_pts_fix). */
+      if (cam.pts_fix) attach_pts_fix(jparse, index, ctxs);
     } else if (cam.mjpeg_decoder == "nvv4l2" ||
                cam.mjpeg_decoder == "nvv4l2decoder") {
       GstElement* dec = make_elem("nvv4l2decoder", "cam-jpegdec-" + idx);
@@ -117,7 +300,9 @@ GstElement* build_v4l2_front(GstBin* nbin, int index, const CameraCfg& cam) {
  * the mux — the new mux has no live-source property, and sink-side pacing
  * could not restore per-source arrival phase anyway (matters for sync-inputs
  * experiments). */
-GstElement* build_file_front(GstBin* nbin, int index, const CameraCfg& cam) {
+GstElement* build_file_front(GstBin* nbin, int index, const CameraCfg& cam,
+                             const ReplayCfg& replay,
+                             std::vector<std::shared_ptr<void>>* ctxs) {
   const std::string idx = std::to_string(index);
   if (cam.file.empty() || !std::filesystem::is_regular_file(cam.file))
     throw std::runtime_error("camera " + idx +
@@ -128,6 +313,14 @@ GstElement* build_file_front(GstBin* nbin, int index, const CameraCfg& cam) {
   GstElement* demux = make_elem("qtdemux", "cam-demux-" + idx);
   GstElement* parse = make_elem("h264parse", "cam-h264parse-" + idx);
   GstElement* dec = make_elem("nvv4l2decoder", "cam-dec-" + idx);
+  /* The decoder's default output pool (~5 surfaces) is smaller than the
+   * backlog a congested mux creates downstream; without headroom the pool —
+   * not the ring queue below — becomes the throttle, the pacer starves, and
+   * lateness accumulated during the stagger window freezes in permanently
+   * (measured in the frame_timing experiment: a constant ~938 ms pacing
+   * error). Extra surfaces keep the pacer on time and move the drop decision
+   * to the ring, where it belongs. */
+  g_object_set(dec, "num-extra-surfaces", 20u, nullptr);
   GstElement* pace = make_elem("identity", "cam-pace-" + idx);
   g_object_set(pace, "sync", TRUE, nullptr);
 
@@ -137,22 +330,80 @@ GstElement* build_file_front(GstBin* nbin, int index, const CameraCfg& cam) {
                              ": filesrc -> qtdemux link failed.");
   link_chain({parse, dec, pace});
   g_signal_connect(demux, "pad-added", G_CALLBACK(on_demux_pad_added), parse);
-  return pace;
+
+  /* Skew injection: rewrite PTS' = PTS*rate + skew (and drop gap frames) on
+   * the decoder's src pad, BEFORE the pacing identity releases buffers at
+   * running-time PTS' — this is what reproduces live startup stagger, true
+   * cadence and kernel capture gaps on recorded clips. */
+  const bool skewing = replay.skew_ms[index] != 0.0 ||
+                       replay.rate[index] != 1.0 || replay.gap_every > 0;
+  ReplayFrontCtx* rctx = nullptr;
+  if (skewing || replay.restamp) {
+    auto ctx = std::shared_ptr<ReplayFrontCtx>(new ReplayFrontCtx);
+    ctx->cam = index;
+    ctx->rate = replay.rate[index];
+    ctx->skew_ns = static_cast<int64_t>(replay.skew_ms[index] * 1e6);
+    ctx->gap_every = replay.gap_every;
+    /* Stagger the gap pattern so cameras don't all gap on the same frame
+     * index (live gaps are independent). */
+    ctx->gap_phase = index * 17;
+    rctx = ctx.get();
+    ctxs->push_back(std::move(ctx));
+  }
+  if (skewing) {
+    GstPad* dsrc = gst_element_get_static_pad(dec, "src");
+    gst_pad_add_probe(dsrc,
+                      static_cast<GstPadProbeType>(
+                          GST_PAD_PROBE_TYPE_BUFFER |
+                          GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM),
+                      replay_skew_probe, rctx, nullptr);
+    gst_object_unref(dsrc);
+  }
+
+  GstElement* tail = pace;
+  if (replay.ring > 0) {
+    /* The v4l2 kernel-ring stand-in: when the mux side backs up, this queue
+     * fills to `ring` buffers and then DROPS THE NEWEST arrivals
+     * (leaky=upstream) — the pacer never blocks, exactly like a live camera
+     * whose driver drops frames when userspace can't dequeue. */
+    GstElement* ringq = make_elem("queue", "cam-ring-" + idx);
+    g_object_set(ringq, "max-size-buffers", static_cast<guint>(replay.ring),
+                 "max-size-bytes", 0u, "max-size-time",
+                 static_cast<guint64>(0), "leaky", 1 /* upstream */,
+                 "silent", TRUE, nullptr);
+    gst_bin_add(nbin, ringq);
+    link_chain({pace, ringq});
+    tail = ringq;
+  }
+
+  /* Optional jpegparse emulation (the UNFIXED live pipeline): rewrite the
+   * post-ring PTS onto the ideal synthetic grid, counting only survivors.
+   * Sits after the ring so injected drops vanish from the timeline, exactly
+   * like live jpegparse never counting kernel-dropped frames. */
+  if (replay.restamp) {
+    GstPad* tsrc = gst_element_get_static_pad(tail, "src");
+    gst_pad_add_probe(tsrc, GST_PAD_PROBE_TYPE_BUFFER, replay_restamp_probe,
+                      rctx, nullptr);
+    gst_object_unref(tsrc);
+  }
+  return tail;
 }
 
 /* One camera's capture branch as a self-contained bin exposing a single ghost
  * src pad emitting video/x-raw(memory:NVMM),NV12 ready for an nvstreammux
  * sink pad. (No valve: this app has no camera skipping.) */
-GstElement* build_source_bin(int index, const CameraCfg& cam) {
+GstElement* build_source_bin(int index, const CameraCfg& cam,
+                             const ReplayCfg& replay,
+                             std::vector<std::shared_ptr<void>>* ctxs) {
   const std::string idx = std::to_string(index);
   GstElement* bin = gst_bin_new(("source-bin-" + idx).c_str());
   GstBin* nbin = GST_BIN(bin);
 
   GstElement* head_last = nullptr;
   if (cam.source_type == "v4l2") {
-    head_last = build_v4l2_front(nbin, index, cam);
+    head_last = build_v4l2_front(nbin, index, cam, ctxs);
   } else if (cam.source_type == "file") {
-    head_last = build_file_front(nbin, index, cam);
+    head_last = build_file_front(nbin, index, cam, replay, ctxs);
   } else {
     throw std::runtime_error("camera " + idx + ": unknown source_type '" +
                              cam.source_type + "' (use 'v4l2' or 'file').");
@@ -192,8 +443,36 @@ GstElement* build_streammux(const AppConfig& cfg, int num_cams) {
   }
 
   g_object_set(mux, "batch-size", static_cast<guint>(num_cams), nullptr);
-  /* New-mux batched-push-timeout: how long to wait before pushing an
-   * incomplete batch. ~one frame interval, same default as the Python app. */
+
+  /* Optional new-mux INI (batching algorithm / fps bounds / per-source caps).
+   * Ours pins max-same-source-frames=1 so a batch never carries two frames of
+   * one camera — matching the legacy one-frame-per-camera batching.
+   *
+   * THE INI IS THE ONLY PUSH-DEADLINE KNOB THAT WORKS on this mux build
+   * (DS 7.1). Measured 2026-07-08, 8-run matrix, 1–100 ms with and without
+   * an INI: the batched-push-timeout PROPERTY below changes nothing — the
+   * mux re-reads its INI/defaults at state change, after any property set.
+   * The deadline the mux honours is the INI's overall-min-fps (floor cadence
+   * for pushing an incomplete batch); overall-max-fps must be >= min-fps.
+   * Consequences that cost real latency until diagnosed:
+   *   - the shipped min-fps=30 imposed a ~33 ms hold on every run no matter
+   *     what --timeout-us said (the ~115 ms structural e2e penalty found in
+   *     experiments/results/param_sweep_locked/);
+   *   - with NO INI, the mux default min-fps=5 gives a 200 ms service cycle
+   *     — under sync-inputs that alone throttled live capture to 20.5
+   *     fps/cam and pushed staleness to ~310 ms (results/sync_fixed_ml33).
+   * To vary the deadline per run, generate an INI with
+   * overall-min-fps-n=1000000, -d=<push_us> — scripts/timeout_sweep_cpp.py
+   * does exactly this. Measured effect once the knob is real: dynamic-engine
+   * e2e 15.3 ms mean at a 1 ms deadline vs 69 ms at 33.3 ms (sync off). */
+  if (!cfg.mux.config_file.empty())
+    g_object_set(mux, "config-file-path", cfg.mux.config_file.c_str(), nullptr);
+
+  /* Kept for the record only: measured inert on DS 7.1 (see the INI comment
+   * above) — fill and batch rate are identical from 1 to 100 ms whatever
+   * this is set to. Harmless, and the value still lands in the metrics CSV
+   * as the run's intended deadline. Set after the INI so that IF a future
+   * DS release honours the property, the CLI value wins. */
   g_object_set(mux, "batched-push-timeout",
                static_cast<gint>(cfg.mux.batched_push_timeout_us), nullptr);
 
@@ -206,12 +485,6 @@ GstElement* build_streammux(const AppConfig& cfg, int num_cams) {
   if (cfg.mux.sync_inputs)
     g_object_set(mux, "max-latency",
                  static_cast<guint64>(cfg.mux.max_latency_ns), nullptr);
-
-  /* Optional new-mux INI (batching algorithm / fps bounds / per-source caps).
-   * Ours pins max-same-source-frames=1 so a batch never carries two frames of
-   * one camera — matching the legacy one-frame-per-camera batching. */
-  if (!cfg.mux.config_file.empty())
-    g_object_set(mux, "config-file-path", cfg.mux.config_file.c_str(), nullptr);
   return mux;
 }
 
@@ -370,7 +643,8 @@ BuiltPipeline build_pipeline(const AppConfig& cfg, bool display,
    * which becomes camera_id in every output record — so camera N in the
    * YAML's `cameras:` list is camera N everywhere downstream. */
   for (int index = 0; index < num_cams; ++index) {
-    GstElement* source_bin = build_source_bin(index, cfg.cameras[index]);
+    GstElement* source_bin = build_source_bin(index, cfg.cameras[index],
+                                              cfg.replay, &built.probe_ctxs);
     gst_bin_add(bin, source_bin);
     GstPad* srcpad = gst_element_get_static_pad(source_bin, "src");
     const std::string pad_name = "sink_" + std::to_string(index);

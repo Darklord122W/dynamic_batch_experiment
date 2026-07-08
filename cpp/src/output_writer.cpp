@@ -71,6 +71,12 @@ void JsonWriter::write(const FrameDetections& frame) {
   os << "{" << nl
      << ind1 << "\"camera_id\":" << frame.camera_id << "," << nl
      << ind1 << "\"frame_num\":" << frame.frame_num << "," << nl
+     /* buf_pts is the frame's deterministic identity: with the jpegparse
+      * PTS fix (live) or paced replay it is the true capture stamp, stable
+      * across runs on identical input — (camera_id, buf_pts) lets two runs'
+      * detections be compared frame-for-frame (frame_num cannot: the mux
+      * renumbers survivors, so any drop desynchronizes it). */
+     << ind1 << "\"buf_pts\":" << frame.buf_pts << "," << nl
      << ind1 << "\"num_detections\":" << frame.detections.size() << "," << nl
      << ind1 << "\"detections\":[";
   for (std::size_t i = 0; i < frame.detections.size(); ++i) {

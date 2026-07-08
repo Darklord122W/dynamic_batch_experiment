@@ -270,19 +270,30 @@ To send detections somewhere else (socket, queue, ROS 2, DB), subclass
 ## 7. Project layout
 
 ```
-multicam_perception/
+multicam_perception_rt/
 ├── main.py                 # CLI entry: load config, validate cameras, build, run loop
 ├── pipeline_builder.py     # constructs/wires the GStreamer/DeepStream elements
 ├── detection_parser.py     # pyds NvDsBatchMeta -> Detection dataclasses (with track_id)
 ├── output_writer.py        # swappable detection sink (JSON / human log / null)
 ├── fps_overlay.py          # per-camera FPS text drawn on the debug display
+├── context.py              # ContextProvider: all / activity / scheduled (camera-skip logic)
+├── controllers.py          # control plane: camera gates, timeout, batch-size controllers
+├── metrics.py              # per-batch latency/throughput probes → metrics CSV
 ├── config/
 │   ├── camera_params.yaml  # cameras, resolution, fps, tracker, output  ← edit this
 │   ├── pgie_config.txt      # nvinfer/YOLO11n config (GKeyFile)
-│   └── tracker_config.yml   # nvtracker low-level config (NvSORT)
+│   ├── tracker_config.yml   # nvtracker low-level config (NvSORT)
+│   └── mux_config.txt       # NEW-nvstreammux INI (C++ runs; overall-min-fps etc.)
 ├── scripts/
 │   ├── download_yolo11n.sh # fetch + export model, build parser lib
-│   └── build_engine.py     # pre-build the TensorRT engine (no cameras needed)
+│   ├── build_engine.py     # pre-build the TensorRT engine (no cameras needed)
+│   ├── record_replay_clips.py # record per-camera clips for reproducible replay
+│   ├── benchmark.py        # experiment sweep harness (e1, …)
+│   ├── analyze.py          # aggregate metrics CSVs
+│   ├── timeout_sweep.py    # batched-push-timeout sweep (Python app)
+│   └── timeout_sweep_cpp.py # timeout sweep on the C++/new-mux app (new 2026-07-07)
+├── cpp/                    # C++ port on the NEW nvstreammux (see cpp/README.md)
+├── experiments/            # experiment guide, configs, replay clips, results
 ├── models/                 # ONNX, labels, parser .so, prebuilt engine
 └── README.md
 ```

@@ -1,0 +1,34 @@
+# =============================================================================
+# mux_minfps120.txt — campaign-3 SWEEP VARIANT of config/mux_config.txt
+# (NEW nvstreammux batching config, C++ app / USE_NEW_NVSTREAMMUX).
+#
+# Loaded via the mux's config-file-path property; pass with
+# --mux-config experiments/results/param_sweep_locked/mux_minfps120.txt
+# (or --mux-config none to run on built-in defaults).
+# The legacy-mux Python app ignores this file entirely.
+#
+# Identical to the shipped config/mux_config.txt except the fps bounds:
+#   overall-min-fps=120       the FLOOR cadence at which the mux pushes a batch
+#                             even if incomplete — 4× the shipped min-fps=30.
+#                             This is the campaign-3 WINNER: wait collapses from
+#                             ~113 ms to ~2.4 ms, e2e p50 28.3 ms (see README.md
+#                             in this directory / experiments/results/
+#                             param_sweep_locked/README.md).
+#   overall-max-fps=240       upper bound used by the batching algorithm.
+#   max-same-source-frames=1  unchanged — a batch never carries two frames of
+#                             one camera (legacy-compatible batches).
+#   max-fps-control=0         unchanged — no artificial throttling.
+# =============================================================================
+
+[property]
+# algorithm-type=1: round-robin batching across sources (the only shipped type).
+algorithm-type=1
+# Throttling off (0). Set 1 + tune overall-max-fps to cap the mux push rate.
+max-fps-control=0
+# Upper/lower fps bounds used by the batching algorithm (fractions: n/d).
+overall-max-fps-n=240
+overall-max-fps-d=1
+overall-min-fps-n=120
+overall-min-fps-d=1
+# At most 1 frame per camera per batch (see header comment).
+max-same-source-frames=1

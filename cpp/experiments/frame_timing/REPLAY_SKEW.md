@@ -46,7 +46,7 @@ From the live `baseline_pinned` run (120 s, 4× C920, sync-inputs=0,
 
 | # | live phenomenon | measured value |
 |---|---|---|
-| P1 | true capture cadence is 32.026 ms, not 33.33 ms | Δt p50 32.0 ms all cams |
+| P1 | true capture cadence steps at 32.026 ms, not 33.33 ms (errata 2026-07-07: 32.026 ms is the MODAL step, not the mean rate — the mean delivered rate including gap events is ~29.93 fps) | Δt p50 32.0 ms all cams |
 | P2 | sequential USB/UVC startup staggers the cameras | first frame at 0 / 568 / 1137 / 1217 ms (cam1 → cam0 → cam3 → cam2) |
 | P3 | ~2-frame capture gaps, ~once per 2 s per camera | 51–55 kernel seq gaps / 117 s ≈ one per 70 frames; Δt p99 ≈ 100 ms |
 | P4 | the v4l2 kernel ring bounds any backlog by DROPPING new frames | ring ≈ 4 buffers; live staleness capped ≈ 240 ms |
@@ -216,6 +216,18 @@ through all values. Give the cameras slightly different rates (e.g.
 `--rate "0.96081,0.96079,0.96082,0.96080"`) to reproduce the drifting-phase
 behaviour of fig03/fig06 and de-quantize fig05a.
 
+(errata 2026-07-07: one more known mismatch — the replay *over-delivers*.
+Because `--rate` reproduces the 32.026 ms modal step rather than the
+~29.93 fps mean rate (see §2 P1), the 2026-07-06 validation replay delivered
+~30.4 fps per camera vs 29.0–29.1 fps live.)
+
+**Update 2026-07-07** — the campaign rerun re-derived the injection
+parameters (§8) from a fresh live run made with the corrected pinning
+control (`exposure_dynamic_framerate=0`; the correct control makes capture
+gaps ~4× rarer): `--skew-ms 0,1134.8,1702.1,567.2`, per-camera
+`--rate 0.96063,0.96099,0.96087,0.96128`, `--gap-every 275`. Full tables
+land in the campaign report.
+
 ## 8. Re-deriving injection parameters from any live run
 
 ```python
@@ -250,19 +262,43 @@ Be honest about these when drawing conclusions:
   the injected 1.2 s stagger means camera i's pixels genuinely lag, which is
   the point, but cross-camera *content* correspondence differs from a rig
   that was born skewed.
+- **(2026-07-07, matters ONLY for sync-on + restamp) Synthetic-clock drift
+  and anchor lag.** Live, the restamped grids advance 33.333 ms per
+  *delivered* frame while the cameras deliver ~29.8 fps → every camera's
+  synthetic age drifts **+0.65 %/s** (measured +677 ms/90 s, common-mode).
+  The naive §8 derivation (rate from the *modal* 32.026 ms step, gap-every
+  from >60 ms events only) makes the replay deliver ~31 fps → ages drift the
+  **wrong way** (−884 ms/90 s), frames look future-stamped, are never LATE,
+  and sync-on trivially fills — pure artifact. Fix: choose `--gap-every` so
+  the *delivered* mean rate matches live (`gap-every 44` for the 2026-07-07
+  reference run); then drift sign/magnitude match. What still does NOT
+  reproduce: live grids carry an extra per-camera **anchor lag** (the first
+  delivered frame's kernel stamp predates its userspace arrival by 0.3–1.3 s
+  of startup queueing, so live synthetic ages START high: measured medians
+  1571/570/233/1136 ms). Replay anchors at the first *paced* PTS, so its
+  ages start near 0. Consequence: replay restamp-world sync-on discards less
+  than live (measured 41–44 % vs live 85 % at ml=33 ms). Use the replay
+  broken world for mechanism/qualitative work; use live runs for
+  broken-world sync numbers. (The fixed world — `--no-restamp` — has no such
+  limit: it validated against live `baseline_pinned_fixed` /
+  `sync_fixed_ml33` directly.)
 
 ## 10. Where to take it next
 
-- **Sync-on replay**: add `--sync --max-latency-ms 33.333` to the skewed
-  replay to reproduce the live sync-inputs disaster deterministically — the
-  synthetic PTS origins (= your `--skew-ms` values, mod alignment window)
-  decide which cameras can ever co-batch. With `568,0,1217,1137`, cam3/cam2
-  origins differ by 80 ms and everything else by ≥500 ms. Now you can *design*
-  the stagger to make sync succeed or fail on purpose.
+- **Sync-on replay** *(done 2026-07-07 — see `sync_replay_sweep.py` and
+  `results/sync_replay_sweep/`)*: `--sync --max-latency-ms N` on the skewed
+  replay maps sync behaviour in both timestamp worlds. Mind the drift/anchor
+  fidelity limit added to §9: broken-world (restamp) sync numbers are
+  qualitative in replay; the fixed world validated against live.
 - **Startup-flush fix prototyping**: the standing-queue skew reproduces here
   without cameras, so a fix (e.g. flushing mux input queues once all sources
   are live) can be developed and measured entirely in replay, then confirmed
-  live.
-- **`--no-restamp` ablation**: hand the mux the TRUE capture timeline as PTS
-  and measure what sync-inputs *could* do if jpegparse didn't destroy the
-  timestamps.
+  live. *(2026-07-07: live measurement shows sync-inputs=1 + the jpegparse
+  PTS fix + ml=33 ms already flushes the standing queues — true in-batch
+  spread p50 2.1 ms — at ~30 % throughput cost; see
+  `../../experiments/results/campaign_2026-07-07_ptsfix/STEP4_sync_after_fix.md`.)*
+- **`--no-restamp` ablation** *(promoted 2026-07-07)*: this is no longer a
+  hypothetical — with the jpegparse PTS-restore fix in the production app,
+  `--no-restamp` **is** the faithful simulation of the shipped pipeline, and
+  it reproduced the live fixed-world behaviour (mux belief == reality)
+  exactly. The restamp mode remains available to study the pre-fix world.

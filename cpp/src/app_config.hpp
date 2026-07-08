@@ -25,6 +25,26 @@ struct CameraCfg {
   int width = 640;
   int height = 480;
   int fps = 30;
+  bool pts_fix = true;                     // restore true capture PTS around
+                                           // jpegparse (see pipeline_builder)
+};
+
+/* Replay-skew injection (file sources only) — reproduces the live rig's
+ * timing imperfections on recorded clips, so timing/batching experiments can
+ * run without cameras. Ported from cpp/experiments/frame_timing (validated
+ * against the live baseline_pinned run; see REPLAY_SKEW.md). All off by
+ * default: a plain --source file run stays the old ideal replay. */
+struct ReplayCfg {
+  std::vector<double> skew_ms;  // per-camera start delay (startup stagger)
+  std::vector<double> rate;     // per-camera PTS rate factor (true cadence /
+                                // crystal drift); 0.9608 = C920's 32.026 ms
+  int gap_every = 0;            // drop 2 consecutive frames every N (0 = off)
+  int ring = 0;                 // bounded drop-newest queue after the pacer
+                                // (v4l2 kernel-ring stand-in); 0 = off
+  bool restamp = false;         // emulate jpegparse's synthetic-grid PTS
+                                // rewrite (the UNFIXED pipeline); off = mux
+                                // sees the true pacing timeline (the FIXED
+                                // pipeline, pts_fix behaviour)
 };
 
 /* NEW nvstreammux. No width/height/live-source here: the new mux never scales
@@ -61,6 +81,7 @@ struct DisplayCfg {
 struct AppConfig {
   std::vector<CameraCfg> cameras;
   MuxCfg mux;
+  ReplayCfg replay;
   std::string pgie_config_file;         // resolved absolute
   TrackerCfg tracker;
   OutputCfg output;
@@ -78,6 +99,13 @@ struct Overrides {
   int64_t timeout_us = -1;
   int64_t max_latency_ns = -1;
   std::string mux_config;               // "" unset; "none" disables the INI
+  std::string pgie_config;              // "" unset; nvinfer config (engine A/B)
+  int pts_fix = -1;                     // -1 unset | 0 off | 1 on
+  std::string skew_ms;                  // "" unset; comma list, ms per camera
+  std::string rate;                     // "" unset; comma list per camera
+  int gap_every = -1;                   // -1 unset
+  int ring = -1;                        // -1 unset
+  int restamp = -1;                     // -1 unset | 0 off | 1 on
 };
 
 /* Load + normalize the YAML config. Throws std::runtime_error with a clear,

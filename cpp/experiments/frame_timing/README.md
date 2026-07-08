@@ -112,6 +112,15 @@ world instant      =  T + base_time_ns + (CLOCK_REALTIME − CLOCK_MONOTONIC)
      synthetic PTS, which is unique per camera and preserved bit-exact from
      jpegparse through the mux, for P1↔P2) so every batched frame can be traced
      back to its true kernel capture stamp.
+
+   (Update 2026-07-07: this is the *stock DeepStream* behaviour. The
+   production pipeline now restores the true capture PTS across jpegparse —
+   probes on the jpegparse sink/src pads in `../../src/pipeline_builder.cpp`
+   re-apply the kernel capture stamp; ON by default in `cpp/multicam_rt`,
+   `--no-pts-fix` to disable; this instrument has the same fix behind
+   `--pts-fix`. Verified live 2026-07-07: with the fix, premux PTS == kernel
+   capture PTS 100.00 % on all 4 cameras, and `NvDsFrameMeta.buf_pts` equals
+   the true capture stamp 13940/13940.)
 5. The mux also stamps `NvDsFrameMeta.ntp_timestamp` with system **realtime**
    when the frame reaches it (`attach-sys-ts` default). It's an *arrival*
    stamp, not a capture stamp — recorded for cross-checking, not used for the
@@ -145,7 +154,8 @@ Key options (all defaults match the production app's camera config —
 | `--duration S` | capture length; 0 = run until Ctrl-C |
 | `--sync` | `sync-inputs=1` on the mux (+ `--max-latency-ms`, default 33.333) |
 | `--timeout-us` | mux `batched-push-timeout` (default 33333) |
-| `--extra-controls "k=v,…"` | UVC controls applied to every camera, e.g. `exposure_auto_priority=0` |
+| `--extra-controls "k=v,…"` | UVC controls applied to every camera, e.g. `exposure_dynamic_framerate=0` (the working fps-pinning control on kernel 5.15 — `exposure_auto_priority` no longer exists there and is a silent no-op; §5.1) |
+| `--pts-fix` | live mode: restore true kernel capture PTS around jpegparse (mirrors the production app's 2026-07-07 fix, where it is ON by default). Off = historic instrument behaviour: the mux sees jpegparse's synthetic grids |
 | `--devices a,b,…` / `--width/--height/--fps` / `--decoder` / `--mux-config` | pipeline shape |
 
 The `USE_NEW_NVSTREAMMUX=yes` env var is set automatically (before
@@ -177,8 +187,8 @@ runs** (3 s settle time between them):
 | run | capture settings | mux settings | why it exists |
 |---|---|---|---|
 | `baseline` | production-identical (auto-exposure free) | `sync-inputs=0` | what the real app experiences |
-| `baseline_pinned` | `exposure_auto_priority=0` → cameras hold 30 fps in any light | `sync-inputs=0` | isolates *scheduling* discrepancies from *exposure* discrepancies |
-| `sync_pinned` | `exposure_auto_priority=0` | `sync-inputs=1`, `max-latency=33.333 ms` | what "just turn on time alignment" costs |
+| `baseline_pinned` | `exposure_auto_priority=0` — *intended* to hold 30 fps in any light, but a silent no-op on kernel 5.15 (errata 2026-07-07, §5.1): the working control is `exposure_dynamic_framerate=0` | `sync-inputs=0` | isolates *scheduling* discrepancies from *exposure* discrepancies |
+| `sync_pinned` | `exposure_auto_priority=0` (same no-op caveat — §5.1) | `sync-inputs=1`, `max-latency=33.333 ms` | what "just turn on time alignment" costs |
 
 then runs `analyze_timing.py` on each (plus two A/B comparison figures). All
 statistics use only the **steady-state window** (2 s after first frame to
@@ -244,8 +254,17 @@ dim-scene validation run the production-identical pipeline delivered a flat
 **~15 fps (66 ms intervals)** on all four cameras; in the 120 s `baseline` run
 the median interval held 32.0 ms but **Δt p99 was 100–108 ms with 67–80
 kernel-sequence gaps per camera** (the camera silently skipping exposure
-slots). With `exposure_auto_priority=0` (the `*_pinned` runs) the gaps mostly
-vanish (1–17 per camera on the well-lit units) and p99 tightens to ~36 ms.
+slots). With `exposure_auto_priority=0` (the `*_pinned` runs) the results
+split (errata 2026-07-07: "1–17 gaps per camera, p99 tightens to ~36 ms"
+matches only `sync_pinned`; `baseline_pinned` actually had 51–55 gaps per
+camera and Δt p99 100–108 ms — the original sentence wrongly credited both
+runs). The reason is now known: **`exposure_auto_priority` does not exist on
+this kernel (5.15)** — the control was renamed, setting the old name is a
+silent no-op, so the historic `*_pinned` runs never actually applied any
+pinning. The working control is `exposure_dynamic_framerate=0` (verified: it
+pins the 32.0 ms cadence in dim light where the old name lets the cameras
+fall to ~15 fps); with it, the 2026-07-07 rerun measured 9–10 gaps per
+camera and p99 36 ms.
 Consequence: in the wild, the "frame period" is scene-dependent, per-camera,
 and can silently double.
 
@@ -290,6 +309,12 @@ of the true, changing capture skew. Corollaries:
   upstream of the mux.
 - `sync-inputs=1` aligns on this fiction (§5.5).
 
+(Update 2026-07-07: this section describes stock-DS behaviour — the pipeline
+now restores the true capture PTS across jpegparse (production default ON in
+`cpp/multicam_rt`, `--no-pts-fix` to disable; `--pts-fix` in this
+instrument). Verified 2026-07-07: premux PTS == kernel capture PTS 100 % on
+all 4 cameras; `buf_pts` carried the true capture stamp 13940/13940.)
+
 ### 5.5 `sync-inputs=1` pays 93 % of the data for alignment the physics gave for free (`fig11`)
 
 In `sync_pinned` (max-latency = 1 frame), **14,029 frames arrived at the mux
@@ -301,8 +326,11 @@ membership explains the mechanism: 255 of 399 batches are exactly the pair
 to land within the 33 ms window; cam 1 and cam 2 survived almost never (71 and
 96 frames of ~3,500 each). Which cameras win is decided by startup stagger,
 i.e. by luck. This reproduces, and finally *explains*, the earlier verdicts
-("sync dropped ~62 % for zero accuracy gain" in `../../README.md`, "sync
-never batches more than 2 of the 4 C920s" in the Python-side experiments).
+("sync dropped ~62 % for zero accuracy gain" in `../../README.md` — errata
+2026-07-07: that ~62 % figure is errata-flagged; it was measured under
+different settings and is not directly comparable to the 93.5 % discard
+here, which is `sync_pinned` at max-latency 33 ms — and "sync never batches
+more than 2 of the 4 C920s" in the Python-side experiments).
 
 ### 5.6 What this means for the perception pipeline
 
@@ -316,19 +344,44 @@ never batches more than 2 of the 4 C920s" in the Python-side experiments).
   loss — strictly better than what sync-inputs achieved at 93 % loss. But it
   requires true capture stamps to survive to the fusion point: carry the
   kernel timestamp (P0 PTS) in metadata from a probe *upstream of jpegparse*,
-  and never trust `buf_pts`.
+  and never trust `buf_pts`. (Update 2026-07-07: now addressed — the
+  PTS-restore fix in `../../src/pipeline_builder.cpp` (default ON) makes
+  `buf_pts` the true capture stamp, verified 13940/13940, so `buf_pts` is
+  trustworthy whenever the fix is enabled.)
 
 ---
 
-## 6. Layout
+## 6. The 2026-07-07 campaign: the fix, and the post-fix world
+
+Everything in §5 describes the **stock DS 7.1 pipeline**. On 2026-07-07 the
+timestamp destruction was fixed (a PTS-restore probe pair around each
+jpegparse; default ON in the production app `cpp/multicam_rt`, `--pts-fix`
+here) and the headline experiments were re-run. Step-by-step docs with every
+command live in `../../../experiments/results/campaign_2026-07-07_ptsfix/`;
+the short version:
+
+| run (120 s live unless noted) | what it shows |
+|---|---|
+| `results/baseline_pinned_rerun` | §5 reproduced under the corrected pinning control (fix OFF): 100 % full batches, ~198 ms standing-queue spread, synthetic fiction constant 1468.8 ms — **plus** a newly measured +0.65 %/s common-mode synthetic-age drift (grids advance 33.33 ms per delivered frame vs 29.8 fps delivered) |
+| `results/baseline_pinned_fixed` | fix ON: mux belief == reality at every percentile (premux PTS == kernel PTS 100.00 %; buf_pts true 13 940/13 940); sync-off behaviour unchanged |
+| `results/sync_rerun_ml33` | sync-on (ml 33.3 ms), fix OFF: the disaster, fresh — 14.6 % kept, 40.0 % full, 200 ms cadence |
+| `results/sync_fixed_ml33` | **sync-on (ml 33.3 ms), fix ON: 99.9 % kept, 100.0 % full batches, true in-batch spread p50 2.1 ms** (RT-BEV hw-synced reference: 39–46 ms); the standing-queue ladder is flushed; staleness/cadence are set by the INI `overall-min-fps` service cycle (no INI here → default min-fps 5 → 200 ms bursts) |
+| `results/replay_skewed_rerun` / `_fixed` (42 s replay) | both timestamp worlds reproduced from re-derived injection parameters (skew 0/1134.8/1702.1/567.2 ms, per-camera rates, gap-every 44) |
+| `results/sync_replay_sweep` (28 × 32 s replay) | sync_sweep + sync_grid re-run on skewed replay, both worlds: the fixed world fills (4.00) at **every** window ≥ 2 ms, discard 19 % → 0.1 % from ml 2 → 133 ms; `batched-push-timeout` proven inert under sync — and, per the app-side knob characterization, inert on the new mux generally (the INI `overall-min-fps` is the real push-deadline knob) |
+
+## 7. Layout
 
 ```
 frame_timing/
 ├── frame_timing_probe.cpp   # the C++ instrument (pipeline + probes + CSVs);
-│                            # live v4l2 mode AND replay mode (--replay-dir)
+│                            # live v4l2 mode AND replay mode (--replay-dir);
+│                            # --pts-fix = the production app's jpegparse fix
 ├── Makefile                 # make → ./frame_timing_probe
 ├── run_experiment.sh        # the whole LIVE experiment, one command
-├── run_replay.sh            # the RECORDED-VIDEO experiment (no cameras)
+├── run_replay.sh            # the RECORDED-VIDEO experiment (no cameras);
+│                            # injection params re-derived 2026-07-07
+├── sync_replay_sweep.py     # sync_sweep + sync_grid on skewed replay,
+│                            # both timestamp worlds (broken vs fixed)
 ├── REPLAY_SKEW.md           # how recorded clips + injected skew reproduce
 │                            # the live real-time situation — read this before
 │                            # trusting any replay-based timing result

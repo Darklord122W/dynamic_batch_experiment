@@ -1,5 +1,9 @@
-# Pipeline structure under different conditions
+# Pipeline structure under different conditions — Python / legacy-mux app
 
+> **Scope:** this doc describes the **Python app on the legacy `nvstreammux`**.
+> The C++ port on the **new** nvstreammux (28 ms p50 e2e baseline) lives in
+> [`cpp/`](cpp/README.md).
+>
 > The diagrams are **Mermaid** — they render as real graphs on GitHub, VS Code
 > (Markdown preview), Obsidian, and most web viewers. Reading the raw file in a
 > terminal? The **ASCII diagram in §1** and the element table below still read fine.
@@ -114,6 +118,21 @@ Note: `batched-push-timeout` is *required* here, not redundant — it's the thin
 pushes the perpetually-incomplete batch. Set it to 0 and the pipeline **hangs**
 (it waits forever for a complete batch that sync guarantees never forms).
 
+> **(errata 2026-07-07: root cause found — it is not camera phase.)** The sync
+> starvation is caused by **`jpegparse` re-stamping live PTS** (GstBaseParse,
+> GStreamer 1.20): each camera's frames land on a synthetic per-camera 33.33 ms
+> grid anchored at that camera's *own first frame*, so the four grids sit
+> **1.05–1.5 s apart** (USB startup stagger) and the mux is aligning synthetic
+> timelines that never coincide. Evidence + fix:
+> [`cpp/experiments/frame_timing/`](cpp/experiments/frame_timing/); a PTS-restore
+> fix now exists in `cpp/src/pipeline_builder.cpp` (probes on jpegparse's pads
+> restore the true kernel capture stamps; ON by default in `cpp/multicam_rt`,
+> `--no-pts-fix` to disable). The numbers above are **pre-fix, legacy-Python-mux**
+> measurements. Pre-fix, the only viable sync-on configuration was the C++
+> new-mux `--sync --max-latency-ms 2000 --timeout-us 33333` (a window wide enough
+> to bridge the grid offsets); the legacy Python app **freezes** at
+> `max-latency ≥ 500 ms`.
+
 ---
 
 ## 4. Source front — live capture vs file replay
@@ -215,7 +234,9 @@ each control tick, hoping a "full" small batch pushes immediately.
 **Verdict (measured): negative result.** The legacy mux pushes on *"all connected pads
 delivered OR timeout"*, **not** on batch-size — so a smaller `batch-size` never triggers
 an early push (isolated test: wait ~54 ms @bs4 vs ~90 ms @bs2, i.e. worse). Default
-`fixed`. A genuine early-push would need the **new** nvstreammux.
+`fixed`. A genuine early-push would need the **new** nvstreammux — *(update
+2026-07-07: now implemented — the C++ port in [`cpp/`](cpp/README.md) runs the new
+mux; measured 28 ms p50 e2e baseline.)*
 
 ### T5 · Input synchronization
 **Definition:** `sync-inputs=1` makes the mux **time-align** frames by PTS, holding each
@@ -225,6 +246,10 @@ instead of 4 (condition §3), and holds the on-time frames (adds latency).
 **Verdict (measured):** built for **sensor fusion** (a coherent all-camera snapshot).
 Your pipeline detects each camera independently, so it's pure cost — e2e 30→96 ms,
 throughput 120→30–60 fps. **Off by default.**
+*(errata 2026-07-07: the 1–2-frame batches come from `jpegparse` PTS re-stamping
+onto offset per-camera grids, not from camera phase — see the dated note in
+condition §3 and [`cpp/experiments/frame_timing/`](cpp/experiments/frame_timing/);
+the numbers here are pre-fix, legacy-Python-mux measurements.)*
 
 ### T6 · Batched-push-timeout (the base batching mechanism)
 **Definition:** microseconds to wait *after the first frame of a batch arrives* before
@@ -287,3 +312,7 @@ tracker src (inference+track done). From these it derives **compute** (mux→tra
 **e2e** (source→tracker, which *includes* the batch wait because the mux
 re-timestamps the batch), and **wait** (e2e − compute). Keying by PTS rather than
 FIFO order means a dropped frame can't permanently desync the pairing.
+*(errata 2026-07-07: which timeline that PTS lives on matters — on pre-fix runs it
+is the **synthetic** post-`jpegparse` per-camera 33.33 ms grid, not capture time;
+with the 2026-07-07 C++ PTS-restore fix it is the **true kernel capture stamp** —
+see [`cpp/experiments/frame_timing/`](cpp/experiments/frame_timing/).)*

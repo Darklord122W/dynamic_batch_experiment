@@ -19,17 +19,23 @@ cd "$(dirname "$0")"
 DUR="${1:-42}"
 RES="${2:-results}"
 
-# Live-measured parameters (from results/baseline_pinned, 2026-07-06):
-#   startup stagger ms per camera, true period 32.026 ms (rate 32.026/33.333),
-#   one 2-frame capture gap per ~70 frames, v4l2 ring ~4 buffers.
-SKEW="568,0,1217,1137"
-RATE="0.9608,0.9608,0.9608,0.9608"
+# Live-measured parameters (from results/baseline_pinned_rerun, 2026-07-07,
+# corrected pinning control exposure_dynamic_framerate=0):
+#   startup stagger ms per camera; per-camera modal step 32.026 ms with
+#   per-camera crystal differences (rate = modal step / 33.333); GAP=44 makes
+#   the DELIVERED frame rate match the live mean (~29.8 fps) — required for
+#   restamp-world sync fidelity (grid anchors persist only when the grid step
+#   matches the mean delivered cadence). Historic 2026-07-06 values were
+#   SKEW="568,0,1217,1137" RATE="0.9608,..." GAP=70.
+SKEW="0,1134.8,1702.1,567.2"
+RATE="0.96063,0.96099,0.96087,0.96128"
+GAP=44
 
 make -s
 
 echo "== replay 1/2: skewed (simulates live baseline_pinned), ${DUR}s =="
 ./frame_timing_probe --replay-dir clips --num-cams 4 --duration "$DUR" \
-    --skew-ms "$SKEW" --rate "$RATE" --gap-every 70 --ring 4 \
+    --skew-ms "$SKEW" --rate "$RATE" --gap-every $GAP --ring 4 \
     --out-dir "$RES/replay_skewed"
 
 echo "== replay 2/2: ideal (no injected imperfections), ${DUR}s =="
