@@ -93,11 +93,16 @@ GstPadProbeReturn MetricsCollector::src_probe(GstPad*, GstPadProbeInfo* info,
   GstBuffer* buf = GST_PAD_PROBE_INFO_BUFFER(info);
   if (buf != nullptr && GST_BUFFER_PTS_IS_VALID(buf)) {
     MetricsCollector* self = ctx->self;
-    self->arrivals_cum_.fetch_add(1);
     std::lock_guard<std::mutex> lock(self->mu_);
     auto& m = self->src_pts_[ctx->cam_id];
-    m[GST_BUFFER_PTS(buf)] = mono_secs();
-    cap_map(m, kPtsCap);
+    /* Insert-if-absent: when a scheduler stashes and later re-pushes a frame
+     * on this same pad, the probe fires twice for one arrival. The FIRST
+     * stamp is the true arrival (so e2e_ms includes any stash wait) and the
+     * frame must be counted once. emplace() keeps both properties. */
+    if (m.emplace(GST_BUFFER_PTS(buf), mono_secs()).second) {
+      self->arrivals_cum_.fetch_add(1);
+      cap_map(m, kPtsCap);
+    }
   }
   return GST_PAD_PROBE_OK;
 }

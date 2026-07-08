@@ -88,6 +88,14 @@ struct AppConfig {
   DisplayCfg display;
   std::string source_type = "v4l2";     // "v4l2" | "file"
   std::string replay_dir = "experiments/clips";
+
+  /* Set by main.cpp (not by YAML) for the SPARQ scheduler / baseline arms. */
+  int mux_batch_override = -1;          // >0: mux+pgie batch-size = this (=K)
+  bool dropold = false;                 // per-camera keep-newest queue
+                                        // (leaky=downstream, depth 1) before
+                                        // the mux — the config-only baseline
+  int conv_output_buffers = -1;         // >0: nvvideoconvert output pool size
+                                        // (scheduler holds refs; needs slack)
 };
 
 /* Flat CLI overrides merged before normalization. Sentinels: empty string /

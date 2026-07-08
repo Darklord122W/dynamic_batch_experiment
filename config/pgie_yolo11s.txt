@@ -1,0 +1,67 @@
+# =============================================================================
+# pgie_config.txt  —  nvinfer (PGIE) configuration for YOLO11S
+#
+# IMPORTANT: this is a GLib GKeyFile. It only supports comments on their OWN
+# line (a line starting with '#'). A trailing "key=value  # note" would make the
+# note part of the value and nvinfer fails with "Failed to parse group property".
+# So every comment here is on its own line.
+#
+# Paths are relative to THIS file's directory (nvinfer resolves model paths
+# relative to the config file), so the app runs correctly from any directory.
+#
+# batch-size below is a fallback; pipeline_builder.py overrides the nvinfer
+# batch-size property at runtime to equal the active camera count (the ONNX was
+# exported with --dynamic, so one engine serves batch 1..N). The engine is
+# auto-named per batch/precision, e.g. yolo11n.onnx_b4_gpu0_fp16.engine.
+# =============================================================================
+
+[property]
+gpu-id=0
+
+# net-scale-factor = 1/255: normalize pixels to [0,1] (how the ONNX was exported)
+net-scale-factor=0.0039215697906911373
+# model-color-format=0 -> RGB (YOLO11 channel order)
+model-color-format=0
+
+# Model files (relative to this config file's directory)
+onnx-file=../models/yolo11s.onnx
+labelfile-path=../models/labels.txt
+# Prebuilt FP16 engine with dynamic batch (min 1, max 4) — serves ANY camera
+# count 1..4, loads instantly. Delete this file (or this line) to force a rebuild
+# after changing the model/precision; nvinfer then rebuilds from the ONNX above.
+model-engine-file=../models/yolo11s.onnx_b4_gpu0_fp16.engine
+
+# Inference / batching
+# batch-size is a fallback (overridden at runtime to = camera count)
+batch-size=4
+# network-mode: 0=FP32, 1=INT8, 2=FP16. FP16 ~2x throughput on Orin, no calib needed.
+network-mode=2
+# network-type=0 -> detector
+network-type=0
+num-detected-classes=80
+# interval=0 -> infer on every frame (no skipping)
+interval=0
+gie-unique-id=1
+# process-mode=1 -> primary (full-frame) inference
+process-mode=1
+# cluster-mode=2 -> NMS clustering (YOLO outputs raw boxes; nvinfer runs NMS)
+cluster-mode=2
+
+# YOLO11 letterbox: keep aspect ratio with symmetric (centered) padding
+maintain-aspect-ratio=1
+symmetric-padding=1
+#workspace-size=2000
+
+# Custom YOLO bbox parser (built by scripts/download_yolo11n.sh).
+# NvDsInferParseYoloCuda does box decode on the GPU and avoids a reported DS7.1
+# Python segfault in the CPU parser. Fallback: NvDsInferParseYolo (CPU).
+parse-bbox-func-name=NvDsInferParseYoloCuda
+#parse-bbox-func-name=NvDsInferParseYolo
+custom-lib-path=../models/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so
+engine-create-func-name=NvDsInferYoloCudaEngineGet
+
+[class-attrs-all]
+nms-iou-threshold=0.45
+# pre-cluster-threshold = detection confidence floor (raise to cut false positives)
+pre-cluster-threshold=0.25
+topk=300

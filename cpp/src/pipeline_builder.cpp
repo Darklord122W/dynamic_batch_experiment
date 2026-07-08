@@ -394,7 +394,8 @@ GstElement* build_file_front(GstBin* nbin, int index, const CameraCfg& cam,
  * sink pad. (No valve: this app has no camera skipping.) */
 GstElement* build_source_bin(int index, const CameraCfg& cam,
                              const ReplayCfg& replay,
-                             std::vector<std::shared_ptr<void>>* ctxs) {
+                             std::vector<std::shared_ptr<void>>* ctxs,
+                             bool dropold, int conv_output_buffers) {
   const std::string idx = std::to_string(index);
   GstElement* bin = gst_bin_new(("source-bin-" + idx).c_str());
   GstBin* nbin = GST_BIN(bin);
@@ -411,12 +412,30 @@ GstElement* build_source_bin(int index, const CameraCfg& cam,
 
   /* Into GPU memory: NVMM NV12 is what nvstreammux and DeepStream require. */
   GstElement* conv = make_elem("nvvideoconvert", "cam-conv-" + idx);
+  if (conv_output_buffers > 0)
+    g_object_set(conv, "output-buffers",
+                 static_cast<guint>(conv_output_buffers), nullptr);
   GstElement* nvmmcaps = make_elem("capsfilter", "cam-nvmmcaps-" + idx);
   set_caps(nvmmcaps, "video/x-raw(memory:NVMM),format=NV12");
   gst_bin_add_many(nbin, conv, nvmmcaps, nullptr);
   link_chain({head_last, conv, nvmmcaps});
+  GstElement* bin_tail = nvmmcaps;
 
-  GstPad* target = gst_element_get_static_pad(nvmmcaps, "src");
+  if (dropold) {
+    /* Keep-newest baseline: a 1-deep leaky=downstream queue drops the OLDEST
+     * queued frame when a new one arrives and downstream is busy. This is the
+     * config-only alternative to a scheduler; whether it has any effect
+     * depends on the mux exerting backpressure (measured in gate G4). */
+    GstElement* koq = make_elem("queue", "cam-dropold-" + idx);
+    g_object_set(koq, "max-size-buffers", 1u, "max-size-bytes", 0u,
+                 "max-size-time", static_cast<guint64>(0), "leaky",
+                 2 /* downstream */, "silent", TRUE, nullptr);
+    gst_bin_add(nbin, koq);
+    link_chain({nvmmcaps, koq});
+    bin_tail = koq;
+  }
+
+  GstPad* target = gst_element_get_static_pad(bin_tail, "src");
   GstPad* ghost = gst_ghost_pad_new("src", target);
   gst_pad_set_active(ghost, TRUE);
   gst_element_add_pad(bin, ghost);
@@ -442,7 +461,12 @@ GstElement* build_streammux(const AppConfig& cfg, int num_cams) {
         "`echo $USE_NEW_NVSTREAMMUX`).");
   }
 
-  g_object_set(mux, "batch-size", static_cast<guint>(num_cams), nullptr);
+  /* batch-size = camera count normally; a scheduler run overrides it to K
+   * (the per-release frame count) so a released K-burst completes the batch
+   * via is_ready() and pushes immediately as ONE batch. */
+  const int mux_batch =
+      cfg.mux_batch_override > 0 ? cfg.mux_batch_override : num_cams;
+  g_object_set(mux, "batch-size", static_cast<guint>(mux_batch), nullptr);
 
   /* Optional new-mux INI (batching algorithm / fps bounds / per-source caps).
    * Ours pins max-same-source-frames=1 so a batch never carries two frames of
@@ -493,7 +517,9 @@ GstElement* build_pgie(const AppConfig& cfg, int num_cams) {
   g_object_set(pgie, "config-file-path", cfg.pgie_config_file.c_str(), nullptr);
   /* Engine is dynamic-batch (min 1 / max 4): one engine serves any camera
    * count; a partial batch under sync-on runs natively (no padding). */
-  g_object_set(pgie, "batch-size", static_cast<guint>(num_cams), nullptr);
+  const int pgie_batch =
+      cfg.mux_batch_override > 0 ? cfg.mux_batch_override : num_cams;
+  g_object_set(pgie, "batch-size", static_cast<guint>(pgie_batch), nullptr);
   return pgie;
 }
 
@@ -643,8 +669,10 @@ BuiltPipeline build_pipeline(const AppConfig& cfg, bool display,
    * which becomes camera_id in every output record — so camera N in the
    * YAML's `cameras:` list is camera N everywhere downstream. */
   for (int index = 0; index < num_cams; ++index) {
-    GstElement* source_bin = build_source_bin(index, cfg.cameras[index],
-                                              cfg.replay, &built.probe_ctxs);
+    GstElement* source_bin =
+        build_source_bin(index, cfg.cameras[index], cfg.replay,
+                         &built.probe_ctxs, cfg.dropold,
+                         cfg.conv_output_buffers);
     gst_bin_add(bin, source_bin);
     GstPad* srcpad = gst_element_get_static_pad(source_bin, "src");
     const std::string pad_name = "sink_" + std::to_string(index);

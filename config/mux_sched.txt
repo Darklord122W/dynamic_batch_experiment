@@ -1,0 +1,31 @@
+# mux_sched.txt — NEW-nvstreammux INI for SPARQ scheduler runs.
+#
+# The scheduler releases exactly K frames per service (mux batch-size = K set
+# by the app), so batches complete via is_ready() the moment the K-th buffer
+# lands and push immediately. Both deadline anchors are therefore pushed FAR
+# out so the mux never force-pushes a half-assembled burst:
+#   overall-min-fps=2  -> max_dur_time  = last_batch + 500 ms
+#   overall-max-fps=5  -> min_dur_time  = last_batch + 200 ms
+# (Anchors are computed from last_batch_time — nvstreammux_batch.cpp:96 — and
+# a 1 ms-deadline INI would have both expired by release time, splitting every
+# burst into 1+K-1 batches. Measured; see gate G1 in the SPARQ campaign.)
+#
+# max-same-source-frames=2 lets an active camera contribute its fresh frame
+# plus one salvage (held) frame to the same batch (--sched salvage).
+
+# NOTE: no batch-size key here — the INI is (re)read at state change AFTER the
+# app sets its properties (last writer wins, the same aliasing that made
+# batched-push-timeout inert), so an INI batch-size would silently override
+# the app's batch-size=K and break burst completion.
+
+[property]
+algorithm-type=1
+# adaptive-batching would override the app's batch-size=K with the source
+# count (measured: K=2 releases merged into batches of 4) — disable it.
+adaptive-batching=0
+overall-min-fps-n=2
+overall-min-fps-d=1
+overall-max-fps-n=5
+overall-max-fps-d=1
+max-fps-control=0
+max-same-source-frames=2

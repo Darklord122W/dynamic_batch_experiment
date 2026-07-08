@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -32,6 +33,7 @@
 #include "metrics.hpp"
 #include "output_writer.hpp"
 #include "pipeline_builder.hpp"
+#include "scheduler.hpp"
 
 using namespace mcrt;
 
@@ -49,6 +51,8 @@ struct Args {
   std::string metrics_csv;
   double duration_s = 0.0;
   Overrides ov;
+  SchedCfg sched;                    // SPARQ scheduler (default: off)
+  bool dropold = false;              // keep-newest config baseline
 };
 
 void usage(const char* prog) {
@@ -97,6 +101,20 @@ void usage(const char* prog) {
 "  --metrics-csv PATH   write per-batch latency/throughput metrics (same schema\n"
 "                       as the Python harness; scripts/analyze.py reads it)\n"
 "  --duration SECS      stop cleanly after this many seconds (benchmarks)\n"
+"\n"
+"SPARQ scheduler (importance-aware bounded-queue batch former; see\n"
+"cpp/src/scheduler.hpp). Runs with sync-inputs=0 and needs the scheduler\n"
+"mux INI (config/mux_sched.txt is used by default when --sched is on):\n"
+"  --sched MODE         off (default) | fresh | imp | salvage\n"
+"  --sched-k N          frames per release = mux batch-size (default 2)\n"
+"  --sched-depth N      release gate: in-flight <= (N-1)*k frames (default 2)\n"
+"  --sched-tau-max MS   staleness bound for fresh frames (default 150)\n"
+"  --sched-tau-salvage MS  staleness bound for held frames (default 250)\n"
+"  --sched-w F,I,R      value weights fresh,importance,fairness\n"
+"                       (default 0.40,0.35,0.25)\n"
+"  --sched-csv PATH     per-decision log (admit/salvage/evict/displace)\n"
+"  --dropold            keep-newest config baseline: per-camera 1-deep\n"
+"                       leaky=downstream queue before the mux (no scheduler)\n"
 "  -h, --help           this help\n",
                prog);
 }
@@ -194,6 +212,30 @@ Args parse_args(int argc, char** argv) {
       a.metrics_csv = need_value(argc, argv, i, arg.c_str());
     } else if (arg == "--duration") {
       a.duration_s = need_double(argc, argv, i, arg.c_str());
+    } else if (arg == "--sched") {
+      a.sched.mode = need_value(argc, argv, i, arg.c_str());
+      if (a.sched.mode != "off" && a.sched.mode != "fresh" &&
+          a.sched.mode != "imp" && a.sched.mode != "salvage")
+        throw std::runtime_error(
+            "--sched must be off|fresh|imp|salvage, got '" + a.sched.mode +
+            "'.");
+    } else if (arg == "--sched-k") {
+      a.sched.k = static_cast<int>(need_int(argc, argv, i, arg.c_str()));
+    } else if (arg == "--sched-depth") {
+      a.sched.depth = static_cast<int>(need_int(argc, argv, i, arg.c_str()));
+    } else if (arg == "--sched-tau-max") {
+      a.sched.tau_max_ms = need_double(argc, argv, i, arg.c_str());
+    } else if (arg == "--sched-tau-salvage") {
+      a.sched.tau_salvage_ms = need_double(argc, argv, i, arg.c_str());
+    } else if (arg == "--sched-w") {
+      const std::string v = need_value(argc, argv, i, arg.c_str());
+      if (std::sscanf(v.c_str(), "%lf,%lf,%lf", &a.sched.w_fresh,
+                      &a.sched.w_imp, &a.sched.w_fair) != 3)
+        throw std::runtime_error("--sched-w expects F,I,R (three numbers).");
+    } else if (arg == "--sched-csv") {
+      a.sched.decision_csv = need_value(argc, argv, i, arg.c_str());
+    } else if (arg == "--dropold") {
+      a.dropold = true;
     } else {
       usage(argv[0]);
       throw std::runtime_error("unknown argument: " + arg);
@@ -324,6 +366,31 @@ int run(const Args& args) {
   AppConfig cfg = load_config(args.config, args.ov);
   validate_cameras(cfg.cameras);
 
+  // SPARQ scheduler / baseline arms mutate the built pipeline:
+  cfg.dropold = args.dropold;
+  if (args.sched.enabled()) {
+    if (args.dropold)
+      throw std::runtime_error("--sched and --dropold are mutually exclusive.");
+    if (cfg.mux.sync_inputs)
+      throw std::runtime_error(
+          "--sched requires sync-inputs=0 (the scheduler replaces alignment).");
+    cfg.mux_batch_override = args.sched.k;   // mux + pgie batch-size = K
+    cfg.conv_output_buffers = 12;            // stash holds refs; pool slack
+    if (args.ov.mux_config.empty()) {
+      // Default to the scheduler INI (slow deadline anchors + 2 frames per
+      // source per batch) sitting next to the run's mux INI.
+      namespace fs = std::filesystem;
+      const fs::path base = cfg.mux.config_file.empty()
+                                ? fs::path(cfg.pgie_config_file).parent_path()
+                                : fs::path(cfg.mux.config_file).parent_path();
+      const fs::path sched_ini = base / "mux_sched.txt";
+      if (!fs::is_regular_file(sched_ini))
+        throw std::runtime_error("scheduler mux INI not found: " +
+                                 sched_ini.string());
+      cfg.mux.config_file = sched_ini.string();
+    }
+  }
+
   const bool display = args.display || args.debug;
   const std::string log_mode =
       !args.log_mode.empty() ? args.log_mode : (args.debug ? "human" : "json");
@@ -360,6 +427,10 @@ int run(const Args& args) {
     }
   }
   banner += "; pgie=" + cfg.pgie_config_file;
+  if (args.sched.enabled())
+    banner += "; sched=" + args.sched.mode + " k=" +
+              std::to_string(args.sched.k);
+  if (cfg.dropold) banner += "; dropold baseline";
   banner += " log=" + log_mode;
   if (display) banner += "; display window";
   if (!args.record_path.empty()) banner += "; recording -> " + args.record_path;
@@ -393,6 +464,15 @@ int run(const Args& args) {
         args.metrics_csv, n, cfg.mux.batched_push_timeout_us, n,
         cfg.mux.sync_inputs);
     metrics->attach(built.pipeline);
+  }
+
+  // SPARQ scheduler. Attached AFTER metrics so the metrics arrival probe
+  // stamps each frame before the scheduler's probe stashes it (probes fire
+  // in attach order) — e2e_ms then includes the stash wait.
+  std::unique_ptr<Scheduler> sched;
+  if (args.sched.enabled()) {
+    sched = std::make_unique<Scheduler>(args.sched, n);
+    sched->attach(built.pipeline);
   }
 
   // -- 4. Main loop plumbing. Everything that can stop the app funnels into
@@ -434,7 +514,16 @@ int run(const Args& args) {
   if (dur_watch != 0 && !ctx.duration_fired) g_source_remove(dur_watch);
   g_source_remove(sig_watch);
   g_source_remove(bus_watch);
+  /* Scheduler teardown is two-phase: request the stop first (its thread may
+   * be blocked in gst_pad_push; the NULL transition below flushes pads and
+   * unblocks it), then join + release stashed buffers after NULL but before
+   * the pipeline (and its buffer pools) is unreffed. */
+  if (sched != nullptr) sched->request_stop();
   gst_element_set_state(built.pipeline, GST_STATE_NULL);
+  if (sched != nullptr) {
+    sched->join_and_cleanup();
+    sched->print_summary();
+  }
   gst_object_unref(built.pipeline);
   g_main_loop_unref(ctx.loop);
 

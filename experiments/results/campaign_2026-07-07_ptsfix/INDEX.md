@@ -50,7 +50,10 @@ the v4l2src pad), `premux.csv` (P1: what reaches the mux door), `batches.csv`
 | `results/sync_fixed_ml33` | **sync ON** (ml 33.3 ms), **fix ON** | **The campaign headline**: 99.9 % kept, **100.0 % full batches**, members truly simultaneous (spread p50 **2.1 ms** — beats RT-BEV's hardware-synced 39–46 ms), standing-queue ladder flushed; cadence/staleness set by the mux INI service cycle |
 
 Historic runs `baseline`, `baseline_pinned`, `sync_pinned`, `replay_ideal`,
-`replay_skewed` (2026-07-06) are untouched and remain the pre-fix reference.
+`replay_skewed` (2026-07-06) were **deleted 2026-07-08** as unreliable pre-fix
+data — their role as pre-fix reference is covered by the fix-OFF reruns above
+(`baseline_pinned_rerun`, `sync_rerun_ml33`, `replay_skewed_rerun`). Recover
+with `git checkout 265570b -- cpp/experiments/frame_timing/results/<name>`.
 
 ## 3. Replay experiments (no cameras, deterministic input)
 

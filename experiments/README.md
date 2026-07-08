@@ -157,9 +157,12 @@ cuts GPU compute** (power/thermal) at a **−50% real-throughput cost**.
   replay's — the C++ new-mux app shows replay p50 28 ms, no such inflation;
   see `results/param_sweep_locked/`.)
 
-Graphs in `results/big/`: `summary_bars.png` (per-metric bars), `tradeoff.png`
+Graphs were in `results/big/`: `summary_bars.png` (per-metric bars), `tradeoff.png`
 (the Pareto view — the clearest "is it better?"), `timelines.png` (over time),
 `activity_cameras.png` (which cameras the adaptive skip keeps on).
+(**Removed 2026-07-08**: all pre-PTS-fix result data was deleted as unreliable —
+recover any of it with `git checkout 265570b -- experiments/results/big` etc.;
+see `results/EXPERIMENTS.md`.)
 
 ### Metric reliability lesson (important)
 
@@ -183,7 +186,10 @@ experiments/
 ├── myclipsForEXP/       # alternate recorded clip set (cam0..3.mp4), same format as clips/
 └── results/big/         # campaign CSVs, summary.txt, summary_bars.png, timelines.png
 ```
-Other result dirs under `results/`: `sync_grid/`, `sync_sweep/` (sync-inputs
-window studies) and `timeout_sweep*/` (E1 timeout sweeps), plus the baseline
-campaigns `baseline_cpp_vs_py*/` and `param_sweep_locked/`.
+Other result dirs under `results/`: the baseline campaigns
+`baseline_cpp_vs_py*/` and `param_sweep_locked/`, and the C++ engine × sync
+sweeps `timeout_sweep_cpp_*/`. The pre-fix Python-era dirs (`big/`,
+`sync_grid/`, `sync_sweep/`, `timeout_sweep*/`, `myowntest/`) were deleted
+2026-07-08 (unreliable PTS); recoverable at commit `265570b`. Full catalog:
+`results/EXPERIMENTS.md`.
 - `results/campaign_2026-07-07_ptsfix/` — the jpegparse PTS-fix campaign: fix verification, baseline_pinned re-do, replay_skewed reproduction, sync-after-fix, and the C++ engine x sync push-deadline sweeps (REPORT.md = command log)
