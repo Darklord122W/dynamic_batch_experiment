@@ -320,7 +320,8 @@ GstElement* build_file_front(GstBin* nbin, int index, const CameraCfg& cam,
    * (measured in the frame_timing experiment: a constant ~938 ms pacing
    * error). Extra surfaces keep the pacer on time and move the drop decision
    * to the ring, where it belongs. */
-  g_object_set(dec, "num-extra-surfaces", 20u, nullptr);
+  g_object_set(dec, "num-extra-surfaces",
+               static_cast<guint>(replay.surfaces), nullptr);
   GstElement* pace = make_elem("identity", "cam-pace-" + idx);
   g_object_set(pace, "sync", TRUE, nullptr);
 

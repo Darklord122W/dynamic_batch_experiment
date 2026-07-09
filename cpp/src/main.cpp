@@ -91,6 +91,9 @@ void usage(const char* prog) {
 "                       (kernel capture gaps; measured live: ~70)\n"
 "  --ring N             bounded drop-newest queue after the pacer (v4l2\n"
 "                       kernel-ring stand-in; live: 4). 0 = off (default)\n"
+"  --replay-surfaces N  nvv4l2decoder num-extra-surfaces (default 20).\n"
+"                       Sets how deep a FIFO backlog replay can hold; lower\n"
+"                       (2-4) to emulate live queue depth\n"
 "  --restamp            emulate the UNFIXED jpegparse: rewrite PTS onto the\n"
 "                       synthetic per-camera grid (default: off = the mux\n"
 "                       sees true pacing timestamps, like the fixed app)\n"
@@ -196,6 +199,8 @@ Args parse_args(int argc, char** argv) {
       a.ov.gap_every = static_cast<int>(need_int(argc, argv, i, arg.c_str()));
     } else if (arg == "--ring") {
       a.ov.ring = static_cast<int>(need_int(argc, argv, i, arg.c_str()));
+    } else if (arg == "--replay-surfaces") {
+      a.ov.surfaces = static_cast<int>(need_int(argc, argv, i, arg.c_str()));
     } else if (arg == "--restamp") {
       a.ov.restamp = 1;
     } else if (arg == "--no-restamp") {

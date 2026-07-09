@@ -41,6 +41,11 @@ struct ReplayCfg {
   int gap_every = 0;            // drop 2 consecutive frames every N (0 = off)
   int ring = 0;                 // bounded drop-newest queue after the pacer
                                 // (v4l2 kernel-ring stand-in); 0 = off
+  int surfaces = 20;            // nvv4l2decoder num-extra-surfaces. 20 keeps
+                                // the pacer honest under congestion but also
+                                // DEEPENS the FIFO backlog replay can hold
+                                // (~20 frames/cam beyond live) — lower it to
+                                // emulate live queue depth (see E7)
   bool restamp = false;         // emulate jpegparse's synthetic-grid PTS
                                 // rewrite (the UNFIXED pipeline); off = mux
                                 // sees the true pacing timeline (the FIXED
@@ -113,6 +118,7 @@ struct Overrides {
   std::string rate;                     // "" unset; comma list per camera
   int gap_every = -1;                   // -1 unset
   int ring = -1;                        // -1 unset
+  int surfaces = -1;                    // -1 unset
   int restamp = -1;                     // -1 unset | 0 off | 1 on
 };
 

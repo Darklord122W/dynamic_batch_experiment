@@ -57,7 +57,9 @@ struct SchedCfg {
   double w_imp = 0.35;
   double w_fair = 0.25;
   double imp_halflife_s = 2.0;   // importance EWMA half-life
-  double imp_max = 10.0;         // clip (absolute, not normalized per tick)
+  double imp_max = 2.0;          // clip; sized so ~0.7 new tracks/s saturates
+                                 // (v1 default 10 with a +dets increment
+                                 // saturated on persistent-object scenes)
   double retention_thresh = 0.30;// imp_score >= this at displacement -> held
   std::string decision_csv;      // "" = no per-decision log
 

@@ -187,10 +187,17 @@ void Scheduler::on_completion(GstBuffer* buf) {
         const auto tid = static_cast<int64_t>(obj->object_id);
         if (tid >= 0 && c.seen_ids.insert(tid).second) ++new_tracks;
       }
-      const double inc = 3.0 * new_tracks + 1.0 * dets;
+      /* Importance measures ACTIVITY (new objects appearing), not standing
+       * content. The v1 increment (3*new_tracks + 1*dets) saturated at
+       * I_max on any persistent-object scene — measured: median imp_score
+       * 1.000 on every camera of an office scene, 68% of admissions at
+       * >=0.99 — making the importance term a constant and imp mode
+       * structurally identical to fresh mode. v2: new-track events only. */
+      const double inc = 1.0 * new_tracks;
       const double old = importance_now(cam, now);  // decays to now
       c.importance = std::min(old + inc, cfg_.imp_max);
       c.imp_updated = now;
+      (void)dets;
     }
 
     // Service-time estimate from the release FIFO.

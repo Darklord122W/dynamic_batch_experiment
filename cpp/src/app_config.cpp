@@ -203,6 +203,7 @@ AppConfig load_config(const std::string& path, const Overrides& ov) {
     cfg.replay.rate = parse_double_list(ov.rate, "--rate");
   if (ov.gap_every >= 0) cfg.replay.gap_every = ov.gap_every;
   if (ov.ring >= 0) cfg.replay.ring = ov.ring;
+  if (ov.surfaces >= 0) cfg.replay.surfaces = ov.surfaces;
   if (ov.restamp >= 0) cfg.replay.restamp = (ov.restamp != 0);
   const bool replay_knobs_used =
       !cfg.replay.skew_ms.empty() || !cfg.replay.rate.empty() ||
