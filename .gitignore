@@ -1,1 +1,24 @@
+# === Large model artifacts (NOT in git) ===
+# Regenerate ONNX/engines from models/_build/export_yolo11.py + labels.txt
+*.onnx
+*.pt
+*.engine
+*.so
+
+# TensorRT / DeepStream build clone (nested repo)
+models/_build/DeepStream-Yolo/
+
+# === Media ===
 *.mp4
+
+# === Python ===
+__pycache__/
+*.py[cod]
+
+# === C++ build artifacts ===
+*.o
+*.d
+cpp/multicam_rt
+
+# === Local / editor ===
+.claude/
