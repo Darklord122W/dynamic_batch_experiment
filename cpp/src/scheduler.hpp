@@ -121,7 +121,8 @@ class Scheduler {
   double importance_now(int cam, double now);
   void log_decision(double t, const char* event, int cam, const char* slot,
                     double age_ms, double fresh_s, double imp_s, double fair_s,
-                    double value, int released, long in_flight);
+                    double value, int released, long in_flight,
+                    guint64 buf_pts = 0);
 
   const SchedCfg cfg_;
   const int num_cams_;

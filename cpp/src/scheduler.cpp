@@ -1,6 +1,7 @@
 #include "scheduler.hpp"
 
 #include <glib.h>
+#include <pthread.h>
 
 #include <algorithm>
 #include <chrono>
@@ -28,7 +29,7 @@ Scheduler::Scheduler(const SchedCfg& cfg, int num_cams)
                                cfg_.decision_csv);
     std::fputs(
         "t,event,cam,slot,age_ms,fresh_score,imp_score,fair_score,value,"
-        "released,in_flight\n",
+        "released,in_flight,buf_pts\n",
         dlog_);
   }
 }
@@ -152,7 +153,7 @@ void Scheduler::on_arrival(int cam, GstBuffer* buf) {
         c.held = c.fresh;  // retained for possible salvage
         log_decision(now - t_start_, "retain-held", cam, "held",
                      (now - c.held.t_arrival) * 1e3, 0, imp_s, 0, 0, 0,
-                     in_flight_.load());
+                     in_flight_.load(), GST_BUFFER_PTS(c.held.buf));
       } else {
         drop_slot(c.fresh, cam, "displace");
       }
@@ -230,15 +231,18 @@ void Scheduler::drop_slot(Slot& slot, int cam, const char* why) {
 void Scheduler::log_decision(double t, const char* event, int cam,
                              const char* slot, double age_ms, double fresh_s,
                              double imp_s, double fair_s, double value,
-                             int released, long in_flight) {
+                             int released, long in_flight, guint64 buf_pts) {
   if (dlog_ == nullptr) return;
   std::lock_guard<std::mutex> lock(dlog_mu_);
-  std::fprintf(dlog_, "%.4f,%s,%d,%s,%.1f,%.3f,%.3f,%.3f,%.3f,%d,%ld\n", t,
-               event, cam, slot, age_ms, fresh_s, imp_s, fair_s, value,
-               released, in_flight);
+  std::fprintf(dlog_,
+               "%.4f,%s,%d,%s,%.1f,%.3f,%.3f,%.3f,%.3f,%d,%ld,%" G_GUINT64_FORMAT "\n",
+               t, event, cam, slot, age_ms, fresh_s, imp_s, fair_s, value,
+               released, in_flight, buf_pts);
 }
 
 void Scheduler::thread_main() {
+  pthread_setname_np(pthread_self(), "sparq-sched");  // /proc-visible for
+                                                      // overhead accounting
   std::unique_lock<std::mutex> lock(mu_);
   while (!stop_.load()) {
     // Wake on arrivals/completions/EOS; timeout keeps the watchdog alive.
@@ -390,7 +394,8 @@ bool Scheduler::release_once() {
     log_decision(now - t_start_, it.held ? "admit-salvage" : "admit", it.cam,
                  it.held ? "held" : "fresh", it.cd.age_ms, it.cd.fresh_s,
                  it.cd.imp_s, it.cd.fair_s, it.cd.value,
-                 static_cast<int>(items.size()), inflt);
+                 static_cast<int>(items.size()), inflt,
+                 GST_BUFFER_PTS(it.buf));
 
   // Push outside the lock (the arrival probes must not deadlock against us).
   mu_.unlock();

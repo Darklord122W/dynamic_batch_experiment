@@ -77,6 +77,11 @@ void JsonWriter::write(const FrameDetections& frame) {
       * detections be compared frame-for-frame (frame_num cannot: the mux
       * renumbers survivors, so any drop desynchronizes it). */
      << ind1 << "\"buf_pts\":" << frame.buf_pts << "," << nl
+     /* t_emit: CLOCK_MONOTONIC seconds at which this record leaves the
+      * pipeline — buf_pts says WHICH instant the pixels show, t_emit says
+      * WHEN the system knew. Their difference is the output staleness that
+      * time-to-awareness metrics charge against event recall. */
+     << ind1 << "\"t_emit\":" << (g_get_monotonic_time() / 1e6) << "," << nl
      << ind1 << "\"num_detections\":" << frame.detections.size() << "," << nl
      << ind1 << "\"detections\":[";
   for (std::size_t i = 0; i < frame.detections.size(); ++i) {
